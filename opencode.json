@@ -17,6 +17,23 @@
           }
         }
       }
+    },
+    "qwen-arc-moe": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen 3.6 35B A3B MoE (Arc B60)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8184/v1"
+      },
+      "models": {
+        "qwen3.6-35b-a3b": {
+          "name": "Qwen 3.6 35B A3B MoE (Arc B60)",
+          "reasoning": true,
+          "limit": {
+            "context": 32768,
+            "output": 8192
+          }
+        }
+      }
     }
   },
   "model": "qwen-arc/qwen3.8-27b"

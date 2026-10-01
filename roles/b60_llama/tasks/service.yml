@@ -36,7 +36,9 @@
   register: engine_start
   changed_when: "'already running' not in engine_start.stdout"
   become: "{{ podman_as_root | bool }}"
-  when: start_service | bool
+  when:
+    - start_service | bool
+    - llama_track == active_track
 
 - name: Wait for the API to become healthy
   ansible.builtin.uri:
@@ -47,12 +49,15 @@
   retries: 120
   delay: 5
   changed_when: false
-  when: start_service | bool
+  when:
+    - start_service | bool
+    - llama_track == active_track
 
 - name: Service summary
   ansible.builtin.debug:
     msg:
+      - "track    : {{ llama_track }}{{ '' if llama_track == active_track else ' (provisioned, not active — GPU is exclusive)' }}"
       - "script   : {{ run_script }} {start|stop|restart|status|logs}"
       - "container: {{ service_name }} ({{ selected_backend }}) via podman"
       - "api      : http://{{ api_host }}:{{ api_port }}/v1"
-      - "health   : {{ health.json.status | default('n/a') if (start_service | bool) else 'not started' }}"
+      - "health   : {{ health.json.status | default('n/a') if (start_service | bool and llama_track == active_track) else 'not started' }}"

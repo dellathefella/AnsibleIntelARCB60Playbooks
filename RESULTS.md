@@ -52,12 +52,12 @@ prefill 190.8 / 120.7 / 267.5. Halogen decode 45.1 / 45.2 / 42.6.
 
 | Variant | MTP head | Decode t/s | Notes |
 |---|:---:|---:|---|
-| `…IQ3_S-…MTP-Q4_K` (deployed) | yes | 22–35 | chosen |
-| `…MTP-3.2BPW` | yes | **0.84** | pathological Vulkan dequant; unusable |
-| `…Ridge-…Q4_K` | **no** | ~3–5 (ngram-only) | can't use MTP; larger; not competitive |
+| `…IQ3_S-…MTP-Q4_K` (dense track) | yes | 22–35 | chosen |
+| `…MTP-3.2BPW` | yes | ~~0.84~~ → **~10** | original number was cliff-contaminated (small ctx, no nohv fix); still 3× slower |
+| `…Ridge-…Q4_K` | **no** | ~~3–5~~ → **~14–15** | cliff-contaminated too; ngram-only, no MTP head |
 
-3.2BPW diagnostic (54-tok prompt): prefill 6.7 t/s, decode 0.84 t/s,
-draft acceptance 3/3 — GPU-bound but ~56× off the memory-bandwidth ideal.
+See "MoE track probe" below for the corrected retests. Verdicts stand: neither
+beats the deployed Q4_K MTP; 3.2BPW has a genuinely slow Vulkan dequant path.
 
 ## Tuning experiments (`bench/tune.py`)
 
@@ -112,6 +112,39 @@ TOTAL 448s
 | drop `ngram-mod` (MTP only) | −25% decode | rejected |
 | `-b/-ub 2048` | long-ctx decode 20.0 → 12.4 | rejected |
 | `GGML_VK_FORCE_MMVQ=1` | within noise | not adopted |
+
+## MoE track probe (`bench/moe_probe.py`) — corrected retests + Qwen3.6-35B-A3B
+
+All configs with `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1`. The 3.2BPW/Ridge
+retests **correct earlier verdicts**: their original numbers were measured in
+the small-context cliff regime.
+
+```
+3.2bpw_retest   code_review prompt=  208 prefill=   40.1 gen= 257 decode=  9.94 draft_acc=175/204
+3.2bpw_retest   code_gen    prompt=  120 prefill=   80.3 gen= 257 decode= 10.80 draft_acc=183/187
+ridge_retest    code_review prompt=  209 prefill=   52.5 gen= 257 decode= 13.75 draft_acc=145/150
+ridge_retest    code_gen    prompt=  120 prefill=   98.8 gen= 257 decode= 14.96 draft_acc=184/184
+a3b_q4ks_32k    code_review prompt=  166 prefill=   52.4 gen= 257 decode= 38.65 draft_acc=208/223
+a3b_q4ks_32k    code_gen    prompt=   78 prefill=  133.2 gen= 257 decode= 39.94 draft_acc=191/206
+a3b_q3kl_131k   code_review prompt=  166 prefill=   19.0 gen= 257 decode= 26.81 draft_acc=208/217
+a3b_q3kl_131k   code_gen    prompt=   80 prefill=  103.0 gen= 257 decode= 26.38 draft_acc=198/216
+a3b_q3kl_131k   long_review prompt= 2907 prefill=  223.3 gen= 257 decode= 27.52 draft_acc=212/219
+a3b_q3kl_d8     code_review prompt=  166 prefill=   27.7 gen= 257 decode= 22.10 draft_acc=227/227
+a3b_q3kl_d8     code_gen    prompt=   78 prefill=  113.8 gen= 257 decode= 20.87 draft_acc=217/234
+TOTAL 660s
+```
+
+GGUF header probes (range-download of first 32 MB, parsed tensor types):
+
+| File | IQ tensors | MTP head | Note |
+|---|---:|:---:|---|
+| unsloth UD-Q4_K_S | 0 | yes | fastest decode (~39–40 t/s), ctx ≤ ~32k |
+| unsloth UD-Q3_K_XL / Q3_K_M | **117** (IQ3_XXS/IQ4_XS experts) | yes | avoided |
+| bartowski Q3_K_L | 0 | yes | deployed MoE track (131k ctx) |
+
+Findings: Q3_K decodes slower than Q4_K on Vulkan despite fewer bytes
+(kernel-path inversion); draft-n-max 8 hits 100% acceptance but loses to 5
+(verification cost); MoE Q4_K_S is the fastest decode measured on this rig.
 
 ## Interpretation
 

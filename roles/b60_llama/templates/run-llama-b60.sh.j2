@@ -16,6 +16,7 @@ fi
 {% endif %}
 
 NAME="{{ service_name }}"
+SIBLING="{{ sibling_service | default('') }}"
 IMAGE="{{ llama_image }}"
 RENDER="{{ b60_render_node }}"
 MODELS="{{ models_dir }}"
@@ -53,6 +54,10 @@ start() {
   if [ "$(cur_hash)" = "$HASH" ] && is_running; then
     echo "$NAME already running (config current)"
     return 0
+  fi
+  # one GPU, one track: stop the sibling service before claiming the device
+  if [ -n "$SIBLING" ]; then
+    podman stop "$SIBLING" >/dev/null 2>&1 || true
   fi
   if [ "$(cur_hash)" = "$HASH" ] && exists; then
     podman start "$NAME" >/dev/null

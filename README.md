@@ -83,6 +83,44 @@ Edit `inventory/hosts.yml`: swap the `local` connection for `ssh` + the B60 host
 address/user. Nothing else changes — the render node is auto-detected on whatever host
 you target.
 
+## Tracks (dense / MoE)
+
+Two model tracks share the one GPU — **mutually exclusive at runtime**; each
+control script stops its sibling before claiming the device.
+
+| Track | Model | Ctx | Decode t/s | Service / port |
+|---|---|---:|---:|---|
+| `dense` | Qwen3.8-27B IQ3_S→Q4_K (MTP) | 200k | ~27–35 | `llama-b60` / 8183 |
+| `moe` | Qwen3.6-35B-A3B Q3_K_L (MTP) | 131k | ~26–28 | `llama-b60-moe` / 8184 |
+
+```bash
+ansible-playbook site.yml                          # provision both, start active_track
+ansible-playbook site.yml --tags moe -e active_track=moe     # MoE only
+sudo ~/scripts/llama-b60.sh start                  # switch to dense (stops moe)
+sudo ~/scripts/llama-b60-moe.sh start              # switch to moe (stops dense)
+```
+
+`opencode.json` lists **both providers** (`qwen-arc`, `qwen-arc-moe`); the
+default model follows `active_track`. Switch tracks in opencode by picking the
+model, or restart the sibling service.
+
+**MoE candidate shoot-out** (`bench/moe_probe.py`, all with the nohv fix):
+
+| Candidate | Size | IQ tensors | MTP | Ctx | Decode t/s |
+|---|---:|---:|:---:|---:|---:|
+| unsloth UD-Q4_K_S | 19.9 GiB | 0 | yes | 32k | **38.7–39.9** |
+| bartowski Q3_K_L (**deployed**) | 16.6 GiB | 0 | yes | **131k** | 26.4–27.5 |
+| bartowski Q3_K_L, draft-n-max 8 | — | — | yes | 131k | 20.9–22.1 (100% acc, still slower) |
+
+- unsloth UD-Q3_K_M/XL carry **117 IQ expert tensors** (GGUF header-parsed) →
+  avoided on this rig; bartowski Q3_K_L is pure K-quants **and keeps the NextN
+  MTP head** → the max-context pick.
+- Q3_K decodes *slower* than Q4_K on Vulkan despite being 3.3 GB smaller —
+  kernel-path inversion. For pure speed at 32k ctx, flip the moe track to
+  `model_profile: a3b_q4ks` + `ctx_size: 32768` in `group_vars/all.yml`
+  (~+45% decode).
+- draft-n-max 8 accepts 100% but verification cost outweighs it; 5 is the sweet spot.
+
 ## Benchmark findings (B60 / Vulkan)
 
 Full raw outputs + environment: **[RESULTS.md](RESULTS.md)**.
@@ -94,18 +132,20 @@ shootout). Methodology per prompt: a unique nonce forces a **cold prefill** call
 
 ### Quant variants from the repo (on the B60)
 
+Measured with the no-ReBAR fix + `-c 32768` (earlier small-context runs were
+cliff-contaminated — see below):
+
 | Variant | Quant | MTP head | Decode t/s | Verdict |
 |---|---|:---:|---:|---|
-| `…IQ3_S-…MTP-Q4_K` (**current**) | Q4_K | yes | **~22–35** | Best — keep it |
-| `…MTP-3.2BPW` | ~3.2 bpw | yes | **0.84** | Unusable — pathological dequant on Vulkan |
-| `…Ridge-…Q4_K` | Q4_K | **no** | ~3–5 (ngram-only) | Not competitive — no MTP head |
+| `…IQ3_S-…MTP-Q4_K` (**dense track**) | Q4_K | yes | **~27–35** | Best dense |
+| `…MTP-3.2BPW` | ~3.2 bpw | yes | ~10 | 3× slower — slow dequant path |
+| `…Ridge-…Q4_K` | Q4_K | **no** | ~14–15 (ngram-only) | No MTP head; not competitive |
 
-- **3.2BPW is dead on arrival here.** ~0.84 t/s decode — ~30× slower than the
-  current Q4_K. On Vulkan this quant hits a pathological unpack path (the inverse
-  of the author's SYCL "0 IQ tensors" story, which doesn't apply to Vulkan).
-- **Ridge Q4_K has no MTP head**, so it can't use the speculative-decoding boost
-  that makes the current model fast; with ngram-only it sits at ~3–5 t/s. Same
-  Q4_K type but ~2 GB larger and without MTP = a downgrade on this rig.
+- **3.2BPW:** ~10 t/s even with the cliff fix — this quantization genuinely has
+  a slow Vulkan dequant path. (The originally reported 0.84 t/s was a
+  small-context cliff artifact.)
+- **Ridge Q4_K has no MTP head**, so it can't use the speculative boost;
+  ~14–15 t/s with ngram-only. (Originally reported 3–5 t/s — also cliff.)
 
 ### Key operational discovery: the small-context cliff (and its fix)
 
@@ -181,4 +221,5 @@ bench/
   bench.py             B60 vs Halogen (cold prefill + warm decode)
   variants.py          quant-variant shootout (sequential on-GPU, rootful)
   tune.py              flag/env tuning harness (sequential configs, rootful)
+  moe_probe.py         MoE candidates + corrected variant retests
 ```

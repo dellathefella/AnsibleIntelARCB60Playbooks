@@ -15,6 +15,42 @@ llama_backend: auto
 llama_image_sycl:   ghcr.io/ggml-org/llama.cpp:full-intel
 llama_image_vulkan: ghcr.io/ggml-org/llama.cpp:server-vulkan
 
+# ---- Tracks ------------------------------------------------------------------
+# Two model tracks share the one GPU (mutually exclusive at runtime; each track's
+# control script stops its sibling before starting). Deploy by tag:
+#   ansible-playbook site.yml --tags dense            # provision dense only
+#   ansible-playbook site.yml --tags moe -e active_track=moe   # provision+run MoE
+#   ansible-playbook site.yml                         # provision both, start active_track
+active_track: dense
+
+tracks:
+  dense:
+    model_repo: Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF
+    model_profile: q4k
+    service_name: llama-b60
+    api_port: 8183
+    ctx_size: 200000
+    sibling_service: llama-b60-moe
+    opencode_provider_id: qwen-arc
+    opencode_model_id: qwen3.8-27b
+    opencode_provider_name: "Qwen 3.8 27B (Arc B60)"
+    opencode_context_limit: 200000
+  moe:
+    # unsloth UD-Q4_K_S: 0 IQ tensors + MTP head (header-verified). Fastest
+    # decode on this rig (~39-40 t/s). For max context instead, switch to
+    # model_profile a3b_q3kl (bartowski Q3_K_L, 16.6 GiB) + ctx_size 131072.
+    model_repo: unsloth/Qwen3.6-35B-A3B-MTP-GGUF
+    model_profile: a3b_q4ks
+    service_name: llama-b60-moe
+    api_port: 8184
+    # 19.9 GiB weights leave ~1.1 GiB -> 32k is the VRAM ceiling with q4_0 KV.
+    ctx_size: 32768
+    sibling_service: llama-b60
+    opencode_provider_id: qwen-arc-moe
+    opencode_model_id: qwen3.6-35b-a3b
+    opencode_provider_name: "Qwen 3.6 35B A3B MoE (Arc B60)"
+    opencode_context_limit: 32768
+
 # ---- Model -----------------------------------------------------------------
 model_repo: Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF
 
@@ -35,6 +71,15 @@ model_profiles:
     file: Qwen3.8-27B-GSQ-RCO-Intel-Arc-Tuned-MTP-3.2BPW.gguf
     sha256: d512b0a6f668be4eba0b41ef23f7e67057e83d66a9843ae1e3c46eb4b876015b
     size: 11239541504
+  # MoE track candidates (header-verified: 0 IQ tensors, NextN/MTP head present)
+  a3b_q3kl:   # max-context pick (16.6 GiB -> ~128k ctx with q4_0 KV)
+    file: Qwen_Qwen3.6-35B-A3B-Q3_K_L.gguf
+    sha256: 8fecfc2c33a3f78f37cab7c1d1684c0ee28fa983058d68a8b3f36a440a0e9909
+    size: 17777899136
+  a3b_q4ks:   # max-quality alt (19.9 GiB -> ~32k ctx)
+    file: Qwen3.6-35B-A3B-UD-Q4_K_S.gguf
+    sha256: 2bee952b218e4a481430c59d8d3bdc7bae20bed0eb501326340c5fca7ae95d42
+    size: 21388319008
 
 # Vision / multimodal projector. The repo ships NO mmproj file, so this stays off.
 # If you drop an mmproj-*.gguf into the models dir, set enable_vision + mmproj_file.

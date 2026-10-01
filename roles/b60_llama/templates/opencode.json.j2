@@ -1,23 +1,25 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "{{ opencode_provider_id }}": {
+{% for tname, t in tracks.items() %}
+    "{{ t.opencode_provider_id }}": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "{{ opencode_provider_name }}",
+      "name": "{{ t.opencode_provider_name }}",
       "options": {
-        "baseURL": "http://{{ api_host }}:{{ api_port }}/v1"
+        "baseURL": "http://{{ api_host }}:{{ t.api_port }}/v1"
       },
       "models": {
-        "{{ opencode_model_id }}": {
-          "name": "{{ opencode_provider_name }}",
+        "{{ t.opencode_model_id }}": {
+          "name": "{{ t.opencode_provider_name }}",
           "reasoning": {{ opencode_reasoning | tojson }},
           "limit": {
-            "context": {{ opencode_context_limit | int }},
+            "context": {{ t.opencode_context_limit | int }},
             "output": {{ opencode_output_limit | int }}
           }
         }
       }
-    }
+    }{{ "," if not loop.last else "" }}
+{% endfor %}
   },
-  "model": "{{ opencode_provider_id }}/{{ opencode_model_id }}"
+  "model": "{{ tracks[active_track].opencode_provider_id }}/{{ tracks[active_track].opencode_model_id }}"
 }
