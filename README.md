@@ -85,6 +85,8 @@ you target.
 
 ## Benchmark findings (B60 / Vulkan)
 
+Full raw outputs + environment: **[RESULTS.md](RESULTS.md)**.
+
 Scripts: `bench/bench.py` (B60 vs Halogen) and `bench/variants.py` (quant-variant
 shootout). Methodology per prompt: a unique nonce forces a **cold prefill** call
 (`max_tokens=1`), then warm (cached-prefill) decode is averaged over 3 reps at
