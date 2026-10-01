@@ -336,6 +336,57 @@ prebuilt image; everything else (graph mode, more speculation) is flat or
 broken. For a bigger jump the lever is a smaller quantization (less bytes to
 stream) or upstream Xe2 kernel work — not local flag tuning.
 
+## SYCL kernel-dispatch investigation — 2026-10-01
+
+Went into `ggml/src/ggml-sycl/` (cloned `a868c3e`) to chase the decode
+hot path. Dispatch tree (`ggml-sycl.cpp:4805+`): batch-1 → **MMVQ** (GEMV)
+or **DMMV** (ESIMD); MTP multi-token (ne[1] 2..8) → **MMQ** (GEMM, XMX).
+The `mmvq.cpp` kernel is already subgroup-optimized with an arch-aware
+rows-per-subgroup crossover ("one row/sg up to 9% faster below the crossover,
+two rows/sg 8-15% faster above it"). There's a device-specific hack for
+`intel_gpu_acm_g10` (Alchemist) that skips MMVQ for Q4_0 — our B60 is
+Battlemage (Xe2_BMG), so it falls through to the generic tuned paths.
+
+Runtime knobs (`ggml_sycl_init`, all default-on unless noted) reroute these
+kernels without a rebuild. A/B at 8k ctx, MTP, K=256:
+
+| Knob | K256 t/s (sweep1) | K256 t/s (sweep2) |
+|---|---:|---:|
+| baseline | 30.7 | 28.6 |
+| `ENABLE_ESIMD=0` | 29.0 | — |
+| `PRIORITIZE_DMMV=1` | 34.1 | — |
+| `ENABLE_DNN=0` | 34.8 | 25.3 |
+| `ENABLE_FUSION=0` | 29.1 | — |
+| `ENABLE_MKL_FA=0` | 30.8 | — |
+
+**The sweeps disagree on the sign of every effect.** Root cause found:
+**intra-session noise is ±32%** — one server, same config, 5 back-to-back
+K=256 runs gave `[25.0, 30.8, 29.8, 32.7, 34.9]` (mean 30.6, stdev 3.3).
+It's a warmup *ramp*: the first run is cold/slow, clocks climb over
+successive runs. Every kernel-dispatch delta measured is inside this noise.
+
+Temps during load were 54–62°C (hwmon) — **not** thermal throttling (that
+needs 90+°C); the ramp is clock DVFS ramping up, not thermal capping. The
+`xe` driver doesn't expose `gt_*_freq_mhz` sysfs so clocks can't be pinned
+from userspace here.
+
+**Verdict on "chasing the kernels":**
+- The SYCL GEMV/GEMM kernels are already well-tuned (subgroup crossover,
+  ESIMD reorder paths, XMX MMQ). No dispatch knob gives a *reproducible*
+  win — the signal is buried under ±32% run-to-run variance.
+- Decode is **bandwidth-bound** (~143 GB/s effective vs ~456 GB/s peak).
+  Switching kernel variants streams the same bytes, so the ceiling is
+  unchanged; only a higher-bandwidth-efficiency kernel would move it.
+- To validate any real kernel change you'd first need a **rigorous harness**:
+  locked clocks (not exposed on xe), long sustained runs, N≥10 reps, and
+  statistical significance — otherwise you're fitting noise.
+- A genuine kernel win = rewriting the Xe2_BMG ESIMD GEMV for higher
+  bandwidth utilization: a multi-day, uncertain-payoff effort, not a
+  flag/config change.
+
+**Reproducible wins found this session:** only `-ffast-math` source build
+(+5–8% decode, see source-build probe above). Everything else is noise.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window
