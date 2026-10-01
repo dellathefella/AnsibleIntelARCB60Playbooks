@@ -294,6 +294,48 @@ vs the llama.cpp SYCL dense track (same card, 200k ctx, MTP speculation):
   better default (faster decode, 6× the context). vLLM earns its place for
   multi-request / high-prefill workloads on the same card.
 
+## llama.cpp source-build optimization probe — 2026-10-01
+
+Goal: can a from-source llama.cpp build (tuned flags) beat the prebuilt
+`full-intel` image on the B60? Cloned `ggml-org/llama.cpp` @ `a868c3e`
+(latest main) on halo1, built the SYCL backend inside the full-intel image
+(icpx/oneAPI 2026.1.1) with `-O3 -ffast-math`, Release, `GGML_SYCL=ON`.
+
+**First: the prebuilt image is already current.** Image build 11312 / commit
+`0c1e57098` is dated 2026-10-01 (same day as main HEAD) — no upstream
+version win available. All levers below are runtime/build-flag, not "get newer".
+
+Decode benchmark (same model/flags, 8k ctx, MTP draft-n-max 5, warm, K-token
+completion; `benchmarks/vllm_bench.py`-style single-stream):
+
+| Config | decode K=128 | decode K=256 | Notes |
+|---|---:|---:|---|
+| Prebuilt image (baseline) | 22.3 t/s | 30.1 t/s | `full-intel` |
+| Prebuilt + `GGML_SYCL_GRAPH=1` | 21.2 t/s | 30.3 t/s | **no win** |
+| Source build `-ffast-math` | 22.7 t/s | **32.5 t/s** | **+5–8%** |
+| Source build, `draft_n_max=8` | — | — | **segfault** (exit 139) |
+
+Findings:
+
+- **Graph mode (`GGML_SYCL_GRAPH=1`) is a no-op here.** Decode is
+  memory-bandwidth-bound, not kernel-launch-bound, so capturing a SYCL graph
+  saves nothing. (Consistent with the bandwidth analysis in Interpretation.)
+- **`-ffast-math` gives a small but real ~5–8% decode bump** (32.5 vs 30.1
+  at K=256). The dequant/requant + rms_norm math benefits from fast-math
+  contraction. This is the only reproducible win found.
+- **`draft_n_max=8` crashes** — the model's MTP draft head only supports
+  ≤5 speculative tokens; 8 segfaults in `server_context::decode`. Confirms
+  the earlier 200k OOM note: 5 is the hard ceiling for this GGUF.
+- **Why not more:** 14.3 GB weights @ ~143 GB/s effective vs ~456 GB/s
+  GDDR6 peak ⇒ ~30% GEMV efficiency, which is typical for batch-1 decode.
+  Closing that gap needs hand-tuned Xe2/XMX kernels (research-level), not
+  build flags. The token-gen speed is bandwidth-bound, not software-bound.
+
+**Verdict:** a `-ffast-math` source build is worth ~5–8% decode over the
+prebuilt image; everything else (graph mode, more speculation) is flat or
+broken. For a bigger jump the lever is a smaller quantization (less bytes to
+stream) or upstream Xe2 kernel work — not local flag tuning.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window
