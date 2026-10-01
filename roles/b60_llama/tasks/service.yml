@@ -1,0 +1,57 @@
+---
+- name: Build llama-server argument string
+  ansible.builtin.set_fact:
+    llama_exec_args: >-
+      {{ (
+        ['-m', '/models/' ~ model_file]
+        + (['--mmproj', '/models/' ~ mmproj_file] if (enable_vision | bool and (mmproj_file | length > 0)) else [])
+        + (['--device', llama_device_arg] if selected_backend == 'vulkan' else [])
+        + ['-ngl', n_gpu_layers | string, '-fa', flash_attn,
+           '-c', ctx_size | string, '-b', batch_size | string, '-ub', ubatch_size | string,
+           '-t', threads | string, '-tb', threads_batch | string,
+           '-ctk', cache_type_k, '-ctv', cache_type_v]
+        + (['--spec-type', spec_type,
+            '--spec-ngram-mod-n-match', spec_ngram_mod_n_match | string,
+            '--spec-ngram-mod-n-min', spec_ngram_mod_n_min | string,
+            '--spec-ngram-mod-n-max', spec_ngram_mod_n_max | string,
+            '--spec-draft-n-max', spec_draft_n_max | string,
+            '--spec-draft-p-min', spec_draft_p_min | string] if enable_speculative | bool else [])
+        + ['--host', '0.0.0.0', '--port', api_port | string]
+      ) | join(' ') }}
+
+- name: Compute desired config hash
+  ansible.builtin.set_fact:
+    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args) | hash('sha256') }}"
+    run_script: "{{ scripts_dir }}/{{ service_name }}.sh"
+
+- name: Drop control script on the target host
+  ansible.builtin.template:
+    src: run-llama-b60.sh.j2
+    dest: "{{ run_script }}"
+    mode: "0755"
+
+- name: Start the engine via the dropped control script
+  ansible.builtin.command: "{{ run_script }} start"
+  register: engine_start
+  changed_when: "'already running' not in engine_start.stdout"
+  become: "{{ podman_as_root | bool }}"
+  when: start_service | bool
+
+- name: Wait for the API to become healthy
+  ansible.builtin.uri:
+    url: "http://{{ api_host }}:{{ api_port }}/health"
+    return_content: true
+  register: health
+  until: health.status == 200
+  retries: 120
+  delay: 5
+  changed_when: false
+  when: start_service | bool
+
+- name: Service summary
+  ansible.builtin.debug:
+    msg:
+      - "script   : {{ run_script }} {start|stop|restart|status|logs}"
+      - "container: {{ service_name }} ({{ selected_backend }}) via podman"
+      - "api      : http://{{ api_host }}:{{ api_port }}/v1"
+      - "health   : {{ health.json.status | default('n/a') if (start_service | bool) else 'not started' }}"

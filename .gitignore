@@ -1,0 +1,26 @@
+# Model weights (huge; live in ~/.local/share/b60-llama/models)
+*.gguf
+*.ggml
+*.safetensors
+
+# Ansible / Python
+*.retry
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets & local overrides — never commit these
+*.env
+*.pw
+*.key
+*.pem
+*.vault
+vault.yml
+secrets.yml
+.secrets/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+*~

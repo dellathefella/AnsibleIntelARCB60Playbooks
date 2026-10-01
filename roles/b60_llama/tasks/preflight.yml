@@ -1,0 +1,115 @@
+---
+- name: Ensure podman is present
+  ansible.builtin.command: podman --version
+  register: podman_check
+  changed_when: false
+  failed_when: podman_check.rc != 0
+
+- name: Ensure curl is present (model download)
+  ansible.builtin.command: curl --version
+  register: curl_check
+  changed_when: false
+  failed_when: curl_check.rc != 0
+
+- name: Detect Intel Arc render node (driver xe, fallback i915)
+  ansible.builtin.shell: |
+    for r in /sys/class/drm/renderD*; do
+      [ -e "$r/device/uevent" ] || continue
+      drv=$(sed -n 's/^DRIVER=//p' "$r/device/uevent" 2>/dev/null)
+      [ "$drv" = "xe" ] && { echo "/dev/dri/$(basename "$r")"; exit 0; }
+    done
+    for r in /sys/class/drm/renderD*; do
+      [ -e "$r/device/uevent" ] || continue
+      drv=$(sed -n 's/^DRIVER=//p' "$r/device/uevent" 2>/dev/null)
+      [ "$drv" = "i915" ] && { echo "/dev/dri/$(basename "$r")"; exit 0; }
+    done
+    exit 3
+  args:
+    executable: /bin/bash
+  register: render_detect
+  changed_when: false
+  failed_when: false
+
+- name: Set render node fact
+  ansible.builtin.set_fact:
+    b60_render_node: "{{ render_detect.stdout | trim }}"
+
+- name: Assert an Intel Arc render node exists
+  ansible.builtin.assert:
+    that:
+      - render_detect.rc == 0
+      - b60_render_node is match('^/dev/dri/renderD[0-9]+$')
+    fail_msg: >-
+      No Intel Arc render node (driver 'xe' or 'i915') found.
+      Is the B60 connected and the 'xe' kernel driver loaded?
+
+- name: Probe SYCL / Level-Zero for a GPU device (needs Resizable BAR)
+  ansible.builtin.command:
+    cmd: >-
+      podman run --rm --device {{ b60_render_node }}
+      --entrypoint /bin/bash {{ llama_image_sycl }}
+      -lc 'sycl-ls --ignore-device-selectors 2>/dev/null || true'
+  register: sycl_probe
+  changed_when: false
+  failed_when: false
+  become: "{{ podman_as_root | bool }}"
+  when: llama_backend in ['auto', 'sycl']
+
+- name: Record SYCL availability
+  ansible.builtin.set_fact:
+    sycl_available: "{{ 'level_zero:gpu' in (sycl_probe.stdout | default('')) }}"
+
+- name: Probe Vulkan for the Arc B60 (works without ReBAR)
+  ansible.builtin.command:
+    cmd: >-
+      podman run --rm --device {{ b60_render_node }} --security-opt label=disable
+      --entrypoint /app/llama-server {{ llama_image_vulkan }} --list-devices
+  register: vulkan_probe
+  changed_when: false
+  failed_when: false
+  become: "{{ podman_as_root | bool }}"
+
+- name: Record Vulkan availability
+  ansible.builtin.set_fact:
+    vulkan_available: "{{ (vulkan_probe.stdout | default('')) is search('Vulkan[0-9]+') }}"
+
+- name: Resolve backend
+  ansible.builtin.set_fact:
+    selected_backend: >-
+      {{ 'sycl'   if (llama_backend in ['auto', 'sycl']   and sycl_available)
+         else ('vulkan' if (llama_backend in ['auto', 'vulkan'] and vulkan_available)
+         else 'none') }}
+
+- name: Assert a usable backend was found
+  ansible.builtin.assert:
+    that: selected_backend != 'none'
+    fail_msg: >-
+      No usable Intel Arc backend on {{ b60_render_node }}.
+      SYCL available={{ sycl_available }} (requires Resizable BAR),
+      Vulkan available={{ vulkan_available }}.
+      If SYCL is required, enable Resizable BAR in firmware; a Thunderbolt eGPU
+      typically cannot, so use llama_backend=vulkan.
+
+- name: Set backend-derived facts
+  ansible.builtin.set_fact:
+    llama_image: "{{ llama_image_sycl if selected_backend == 'sycl' else llama_image_vulkan }}"
+    llama_device_arg: "{{ 'Vulkan0' if selected_backend == 'vulkan' else '' }}"
+
+- name: Create directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ b60_home }}"
+    - "{{ models_dir }}"
+    - "{{ scripts_dir }}"
+
+- name: Backend summary
+  ansible.builtin.debug:
+    msg:
+      - "render node : {{ b60_render_node }}"
+      - "sycl avail  : {{ sycl_available }}"
+      - "vulkan avail: {{ vulkan_available }}"
+      - "backend     : {{ selected_backend }}"
+      - "image       : {{ llama_image }}"

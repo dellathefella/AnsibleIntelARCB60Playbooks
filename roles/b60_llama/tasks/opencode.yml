@@ -1,0 +1,12 @@
+---
+- name: Render opencode.json to the executor (controller)
+  ansible.builtin.template:
+    src: opencode.json.j2
+    dest: "{{ opencode_config_path }}"
+    mode: "0644"
+  delegate_to: localhost
+
+- name: Show generated opencode config (written on the executor)
+  ansible.builtin.debug:
+    msg: "{{ lookup('file', opencode_config_path).splitlines() }}"
+  delegate_to: localhost

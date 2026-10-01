@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# {{ service_name }} control script — Intel Arc B60 / Qwen 3.8 27B (backend: {{ selected_backend }})
+# Dropped on the target host by Ansible. This script is the authoritative runner.
+#
+#   {{ service_name }}.sh {start|stop|restart|status|logs}
+#
+# start is idempotent: it recreates the container only if the baked-in config
+# hash differs from what is currently running.
+set -euo pipefail
+{% if podman_as_root %}
+if [ "$(id -u)" -ne 0 ]; then
+  echo "root mode: run with sudo  ->  sudo $0 ${1:-start}" >&2
+  exit 1
+fi
+{% endif %}
+
+NAME="{{ service_name }}"
+IMAGE="{{ llama_image }}"
+RENDER="{{ b60_render_node }}"
+MODELS="{{ models_dir }}"
+API_HOST="{{ api_host }}"
+API_PORT="{{ api_port }}"
+HASH="{{ b60_hash }}"
+
+# llama-server arguments (baked in by Ansible)
+ARGS=( {{ llama_exec_args }} )
+
+RUN_ARGS=(
+  -d
+  --name "$NAME"
+  --restart unless-stopped
+  --device "$RENDER"
+  --security-opt label=disable
+  -v "$MODELS:/models:ro"
+  -p "${API_HOST}:${API_PORT}:${API_PORT}"
+  --label "b60_hash=${HASH}"
+  --entrypoint /app/llama-server
+)
+{% if selected_backend == 'sycl' %}
+RUN_ARGS+=( -e UR_LOADER_USE_LEVEL_ZERO_V2=0 -e ONEAPI_DEVICE_SELECTOR=level_zero:0 -e ZE_AFFINITY_MASK=0 )
+{% endif %}
+
+is_running() { podman ps -q --filter "name=^${NAME}$" | grep -q .; }
+exists()     { podman inspect "$NAME" >/dev/null 2>&1; }
+cur_hash()   { podman inspect {% raw %}--format '{{ index .Config.Labels "b60_hash" }}'{% endraw %} "$NAME" 2>/dev/null || echo ""; }
+
+start() {
+  if [ "$(cur_hash)" = "$HASH" ] && is_running; then
+    echo "$NAME already running (config current)"
+    return 0
+  fi
+  if [ "$(cur_hash)" = "$HASH" ] && exists; then
+    podman start "$NAME" >/dev/null
+    echo "started $NAME"
+    return 0
+  fi
+  podman rm -f "$NAME" >/dev/null 2>&1 || true
+  podman run "${RUN_ARGS[@]}" "$IMAGE" "${ARGS[@]}" >/dev/null
+  echo "started $NAME (recreated: $IMAGE / {{ selected_backend }})"
+}
+
+stop() {
+  if exists; then podman stop "$NAME" >/dev/null; echo "stopped $NAME";
+  else echo "$NAME not present"; fi
+}
+
+status() {
+  podman ps -a --filter "name=^${NAME}$"
+  echo "api: http://${API_HOST}:${API_PORT}/v1"
+}
+
+logs() { podman logs --tail=200 -f "$NAME"; }
+
+case "${1:-start}" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop || true; start ;;
+  status)  status ;;
+  logs)    logs ;;
+  *) echo "usage: $0 {start|stop|restart|status|logs}"; exit 2 ;;
+esac

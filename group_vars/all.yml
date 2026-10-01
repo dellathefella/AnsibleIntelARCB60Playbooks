@@ -1,0 +1,94 @@
+---
+# ============================================================================
+#  B60 (Intel Arc Pro B60) + Qwen 3.8 27B  —  single tunable file
+#  llama.cpp served as a detached Podman container. Backend auto-selects SYCL vs Vulkan.
+# ============================================================================
+
+# ---- Backend selection -------------------------------------------------------
+# auto   -> prefer SYCL/Level-Zero (fastest, needs Resizable BAR); fall back to
+#           Vulkan (works without ReBAR, e.g. Thunderbolt eGPU).
+# sycl   -> force SYCL (full-intel image). Fails if no level_zero:gpu device.
+# vulkan -> force Vulkan (server-vulkan image).
+llama_backend: auto
+
+# Images (pinned families; override the tag to lock a build)
+llama_image_sycl:   ghcr.io/ggml-org/llama.cpp:full-intel
+llama_image_vulkan: ghcr.io/ggml-org/llama.cpp:server-vulkan
+
+# ---- Model -----------------------------------------------------------------
+model_repo: Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF
+
+# Pick one: q4k (best on 24GB) | bpw37 (headroom) | bpw32 (16GB cards)
+model_profile: q4k
+
+# sha256 == the HuggingFace LFS oid, so downloads are verified + idempotent.
+model_profiles:
+  q4k:
+    file: Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf
+    sha256: 2170ff045d36dfa1ac5cad5a9f4f1945f5a784a93466a0449dbb6ed8ec1eacce
+    size: 15359440960
+  bpw37:
+    file: Qwen3.8-27B-GSQ-RCO-Intel-Arc-Tuned-MTP-3.7BPW.gguf
+    sha256: 6bfcd4b6627ac9d77a793070039d21c4ebb8a63261e3a35decf2e1a50ab9bde5
+    size: 12767103744
+  bpw32:
+    file: Qwen3.8-27B-GSQ-RCO-Intel-Arc-Tuned-MTP-3.2BPW.gguf
+    sha256: d512b0a6f668be4eba0b41ef23f7e67057e83d66a9843ae1e3c46eb4b876015b
+    size: 11239541504
+
+# Vision / multimodal projector. The repo ships NO mmproj file, so this stays off.
+# If you drop an mmproj-*.gguf into the models dir, set enable_vision + mmproj_file.
+enable_vision: false
+mmproj_file: ""
+
+# ---- Paths -----------------------------------------------------------------
+b60_home:     "{{ ansible_env.HOME }}/.local/share/b60-llama"
+models_dir:   "{{ b60_home }}/models"
+scripts_dir:  "{{ ansible_env.HOME }}/scripts"
+
+# ---- Service / API ---------------------------------------------------------
+service_name: llama-b60
+api_host: "127.0.0.1"
+api_port: 8183
+
+# ---- Runtime tuning (shared across backends) -------------------------------
+ctx_size:      200000     # 200k context fits 24GB with q4_0 KV (per author's bench)
+n_gpu_layers:  99         # offload everything
+flash_attn:    "on"
+batch_size:    1024       # -b
+ubatch_size:   1024       # -ub
+threads:       4          # -t   (generation)
+threads_batch: 6          # -tb  (prompt/batch)
+cache_type_k:  q4_0       # -ctk
+cache_type_v:  q4_0       # -ctv
+
+# ---- Speculative decoding (MTP draft head + ngram-mod) ---------------------
+# The tuned GGUFs keep the Layer-64 NextN draft head in Q6_K, so MTP works with
+# no separate draft model.
+enable_speculative:    true
+spec_type:             "ngram-mod,draft-mtp"
+spec_ngram_mod_n_match: 24
+spec_ngram_mod_n_min:   1
+spec_ngram_mod_n_max:   3
+spec_draft_n_max:       3
+spec_draft_p_min:       0.5
+
+# ---- Staged-run toggles (handy for testing) -------------------------------
+download_model: true
+pull_image:     true
+start_service:  true
+
+# ---- Rootful vs rootless podman ------------------------------------------
+# Default is ROOTFUL podman (sudo). Run the playbook with --ask-become-pass (or a
+# NOPASSWD sudoers rule). NOTE: rootful podman uses a SEPARATE image store, so the
+# image is re-pulled as root on first use. Set false to go back to rootless.
+podman_as_root: true
+
+# ---- opencode config output ----------------------------------------------
+opencode_provider_id:   qwen-arc
+opencode_model_id:      qwen3.8-27b
+opencode_provider_name: "Qwen 3.8 27B (Arc B60)"
+opencode_config_path:   "{{ playbook_dir }}/opencode.json"
+opencode_reasoning:     true              # model emits reasoning_content
+opencode_context_limit: "{{ ctx_size }}"  # keep in sync with llama-server -c
+opencode_output_limit:  8192

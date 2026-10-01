@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "{{ opencode_provider_id }}": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "{{ opencode_provider_name }}",
+      "options": {
+        "baseURL": "http://{{ api_host }}:{{ api_port }}/v1"
+      },
+      "models": {
+        "{{ opencode_model_id }}": {
+          "name": "{{ opencode_provider_name }}",
+          "reasoning": {{ opencode_reasoning | tojson }},
+          "limit": {
+            "context": {{ opencode_context_limit | int }},
+            "output": {{ opencode_output_limit | int }}
+          }
+        }
+      }
+    }
+  },
+  "model": "{{ opencode_provider_id }}/{{ opencode_model_id }}"
+}

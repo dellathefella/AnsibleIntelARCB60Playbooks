@@ -1,0 +1,12 @@
+---
+- name: Preflight (podman, render node, backend selection)
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Model (download + verify)
+  ansible.builtin.import_tasks: model.yml
+
+- name: Service (quadlet + systemd)
+  ansible.builtin.import_tasks: service.yml
+
+- name: opencode config output
+  ansible.builtin.import_tasks: opencode.yml

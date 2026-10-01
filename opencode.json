@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "qwen-arc": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen 3.8 27B (Arc B60)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8183/v1"
+      },
+      "models": {
+        "qwen3.8-27b": {
+          "name": "Qwen 3.8 27B (Arc B60)",
+          "reasoning": true,
+          "limit": {
+            "context": 200000,
+            "output": 8192
+          }
+        }
+      }
+    }
+  },
+  "model": "qwen-arc/qwen3.8-27b"
+}

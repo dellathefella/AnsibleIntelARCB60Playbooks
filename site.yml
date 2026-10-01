@@ -1,0 +1,6 @@
+---
+- name: Wire up Intel Arc B60 for Qwen 3.8 27B (llama.cpp via Podman)
+  hosts: b60
+  gather_facts: true
+  roles:
+    - b60_llama
