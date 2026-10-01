@@ -34,7 +34,7 @@
 
     docker_image: "ghcr.io/ggml-org/llama.cpp:full-intel"
     docker_container_name: "qwen38-27b-sycl"
-    sibling_container: "qwen36-a3b-moe"
+    sibling_containers: ["qwen36-a3b-moe", "qwen38-27b-vllm-xpu"]
 
     hf_repo: "Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF"
     model: "Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf"

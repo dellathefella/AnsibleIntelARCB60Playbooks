@@ -7,6 +7,7 @@
 #   ../shared/install-hf-cli.yml          HuggingFace CLI installation                 [install-hf-cli]
 #   qwen38-27b-sycl-podman.yml            Qwen3.8-27B IQ3_S→Q4_K + MTP (llama.cpp SYCL) [qwen38-27b-sycl-podman]
 #   qwen36-a3b-moe-sycl-podman.yml        Qwen3.6-35B-A3B MoE UD-Q4_K_S (llama.cpp SYCL) [qwen36-a3b-moe-sycl-podman]
+#   qwen38-27b-vllm-xpu-podman.yml        Qwen3.8-27B AWQ INT4 (vLLM XPU)               [qwen38-27b-vllm-xpu-podman]
 #   summary.yml                           final per-host completion summary            [summary]
 #
 # Run from repo root:
@@ -42,6 +43,10 @@
 - name: Track — Qwen3.6-35B-A3B MoE (llama.cpp SYCL)
   import_playbook: qwen36-a3b-moe-sycl-podman.yml
   tags: [qwen36-a3b-moe-sycl-podman]
+
+- name: Track — Qwen3.8-27B AWQ INT4 (vLLM XPU)
+  import_playbook: qwen38-27b-vllm-xpu-podman.yml
+  tags: [qwen38-27b-vllm-xpu-podman]
 
 - name: Final per-host summary
   import_playbook: summary.yml

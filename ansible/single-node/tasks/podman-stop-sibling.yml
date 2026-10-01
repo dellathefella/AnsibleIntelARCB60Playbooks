@@ -1,16 +1,16 @@
 # =============================================================================
 # podman-stop-sibling.yml
-# One GPU, one track: stops the sibling track's container before this track
-# claims the device. Silent no-op when the sibling is not present.
+# One GPU, one track: stops the other tracks' containers before this track
+# claims the device. Silent no-op for containers that are not present.
 #
 # Include with:
-#   sibling_container    container name of the other track ("" = none)
+#   sibling_containers   list of container names of the other tracks ([] = none)
 # =============================================================================
 ---
-- name: Stop the sibling track's container (one GPU, one track)
+- name: Stop sibling track containers (one GPU, one track)
   ansible.builtin.command:
-    cmd: "podman stop {{ sibling_container }}"
-  when: (sibling_container | default('')) | length > 0
+    cmd: "podman stop {{ item }}"
+  loop: "{{ sibling_containers | default([]) }}"
   ignore_errors: true
   changed_when: false
   tags: [podman, deploy]

@@ -1,0 +1,187 @@
+---
+# =============================================================================
+# qwen38-27b-vllm-xpu-podman.yml
+# Qwen3.8-27B (AWQ INT4, safetensors) — vLLM via Podman, Intel XPU backend
+# (torch-xpu + vllm-xpu-kernels, official vllm/vllm-openai-xpu image).
+#
+#   image           docker.io/vllm/vllm-openai-xpu:latest (PULLED, never built)
+#   model           philbert440/Qwen3.8-27B-W4A16-AWQ (text-only, 18.2 GiB)
+#   backend         XPU (Level-Zero under the hood) — REQUIRES Resizable BAR.
+#                 Quant matrix: Intel GPU supports AWQ + GPTQ only
+#                 (FP8/W8A8 llm-compressor and GGUF are NOT supported on XPU).
+#                 24 GB card: 18.2 GiB weights + ~3 GiB activations leave
+#                 ~1.3 GiB paged KV -> 32000 ctx ceiling with fp8 KV cache.
+#   API             OpenAI-compatible /v1/* + /health on port 8185
+#   launch script   ~/scripts/qwen38-27b-vllm-xpu-start.sh
+#
+# One GPU, one track: this track stops the llama.cpp tracks
+# (qwen38-27b-sycl, qwen36-a3b-moe) before claiming the device.
+#
+# vLLM brings continuous batching + paged KV — the throughput edge over
+# llama.cpp is on concurrent requests, not single-stream decode.
+# =============================================================================
+
+- name: "vLLM XPU — Qwen3.8-27B (AWQ INT4) on Arc B60"
+  hosts: xpu
+  gather_facts: true
+  become: true
+  tags: [qwen38-27b-vllm-xpu-podman]
+  vars:
+    # =====================================================================
+    # Qwen3.8-27B vLLM XPU track vars — self-contained, no group_vars
+    # =====================================================================
+    track_stem: "qwen38-27b-vllm-xpu"
+
+    docker_image: "docker.io/vllm/vllm-openai-xpu:latest"
+    docker_container_name: "qwen38-27b-vllm-xpu"
+    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe"]
+
+    hf_repo: "philbert440/Qwen3.8-27B-W4A16-AWQ"
+    served_model_name: "qwen3.8-27b"
+
+    # 32000 = vLLM's computed ceiling for this artifact on the 24 GB B60:
+    # 18.2 GiB weights + ~3 GiB activations leave ~1.3 GiB paged KV (fp8).
+    ctx: 32000
+    host_port: 8185
+    gpu_mem_util: "0.95"
+    kv_cache_dtype: "fp8"
+
+    _user_home: "/home/{{ ansible_user }}"
+    _models_dir: "{{ _user_home }}/.local/share/b60-llama/models"
+    _repo_dir: "{{ _models_dir }}/Qwen3.8-27B-W4A16-AWQ"
+    _container_repo_dir: "/models/Qwen3.8-27B-W4A16-AWQ"
+
+    hf_token_lookup: "{{ lookup('file', playbook_dir + '/../secrets/hf_token.txt', errors='ignore') | default('', true) | trim }}"
+
+    # vLLM server arguments. NOTE: the image entrypoint is already `vllm serve`
+    # — do NOT add a `serve` subcommand here; the model is the first positional.
+    _vllm_args: >-
+      {{ _container_repo_dir }}
+      --served-model-name {{ served_model_name }}
+      --max-model-len {{ ctx }}
+      --gpu-memory-utilization {{ gpu_mem_util }}
+      --kv-cache-dtype {{ kv_cache_dtype }}
+      --dtype float16
+      --host 0.0.0.0 --port {{ host_port }}
+
+    # Everything after `podman run -d --name`, shared between the deployment
+    # and the manual debug hint — keeps them from drifting.
+    _podman_common_args: >-
+      --rm
+      --device /dev/dri
+      --security-opt label=disable
+      --ipc=host
+      -v {{ _repo_dir }}:{{ _container_repo_dir }}:ro
+      -e ZE_AFFINITY_MASK=0
+      -e HF_HUB_OFFLINE=1
+      -e VLLM_XPU_VISIBLE_DEVICES=0
+      -p {{ host_port }}:{{ host_port }}
+      {{ docker_image }}
+      {{ _vllm_args }}
+
+    # vLLM cold start: weight load + CUDA-graph-style warmup on XPU takes minutes.
+    podman_health_retries: 180
+
+    # opencode config (rendered to the controller)
+    opencode_provider_id: "qwen-arc-vllm"
+    opencode_model_id: "qwen3.8-27b-vllm"
+    opencode_provider_name: "Qwen 3.8 27B vLLM-XPU (Arc B60)"
+    opencode_model_name: "Qwen 3.8 27B (AWQ INT4, vLLM XPU)"
+    opencode_context_limit: 32000
+    opencode_output_limit: 8192
+
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. ReBAR gate (mandatory) + torch XPU probe
+    # -----------------------------------------------------------------------
+    - name: Resolve render node, PCI id, ReBAR window (mandatory)
+      ansible.builtin.include_tasks: tasks/rebar-gate.yml
+
+    - name: Probe torch XPU device (pulls the image if missing)
+      ansible.builtin.command:
+        cmd: >-
+          podman run --rm --device /dev/dri --security-opt label=disable
+          --entrypoint /bin/bash {{ docker_image }}
+          -lc 'python3 -c "import torch; print(torch.xpu.device_count(), torch.xpu.get_device_name(0))"'
+      register: xpu_probe
+      changed_when: false
+      failed_when: false
+      tags: [podman, gate]
+
+    - name: Assert the torch XPU device is usable
+      ansible.builtin.assert:
+        that:
+          - xpu_probe.rc == 0
+          - (xpu_probe.stdout | default('')).split(' ')[0] | int >= 1
+        fail_msg: >-
+          torch.xpu sees no device inside the vLLM XPU image. The xe driver,
+          Resizable BAR, or the vllm-openai-xpu image is broken on this host.
+        success_msg: "XPU device: {{ xpu_probe.stdout | default('?') }}"
+      tags: [podman, gate]
+
+    # -----------------------------------------------------------------------
+    # 2. Model (whole-repo download + verify)
+    # -----------------------------------------------------------------------
+    - name: Set up models directory
+      ansible.builtin.include_tasks: tasks/podman-models-dir.yml
+
+    - name: Download the AWQ safetensors repo if not present
+      ansible.builtin.include_tasks: tasks/hf-download-repo.yml
+
+    # -----------------------------------------------------------------------
+    # 3. Create and run the Podman container
+    # -----------------------------------------------------------------------
+    - name: Stop the sibling tracks (one GPU, one track)
+      ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
+
+    - name: Remove any existing container
+      ansible.builtin.include_tasks: tasks/podman-remove-container.yml
+
+    - name: Run vLLM container (Podman, XPU)
+      ansible.builtin.command:
+        cmd: "podman run -d --name {{ docker_container_name }} {{ _podman_common_args }}"
+      register: podman_run_result
+      changed_when: "'Started' in podman_run_result.stdout or podman_run_result.rc == 0"
+      tags: [podman, deploy]
+
+    - name: Check container status
+      ansible.builtin.include_tasks: tasks/podman-check-running.yml
+
+    - name: Print container failure info
+      ansible.builtin.debug:
+        msg: |
+          Container {{ docker_container_name }} is NOT running or was removed (has --rm flag).
+
+          To debug, run manually:
+            podman run -it {{ _podman_common_args }}
+
+          Check GPU access: ls -la /dev/dri/
+          Check ReBAR window: cat /sys/bus/pci/devices/{{ b60_pci_id }}/resource
+      when: container_check.stdout | default('') | length == 0
+      tags: [podman, deploy]
+
+    - name: Wait for the server to come up
+      ansible.builtin.include_tasks: tasks/podman-wait-health.yml
+
+    # -----------------------------------------------------------------------
+    # 4. Write launch script + opencode config
+    # -----------------------------------------------------------------------
+    - name: Render launch script + opencode config
+      ansible.builtin.include_tasks: tasks/podman-render-launch-artifacts.yml
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ==== vLLM (Podman, XPU) deployed on {{ inventory_hostname }} ====
+          Image: {{ docker_image }} (pulled)
+          Container: {{ docker_container_name }}
+          API endpoint: http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/v1
+          Model: {{ _repo_dir }} ({{ hf_repo }})
+          Context: {{ ctx }} (AWQ INT4, gpu-mem-util {{ gpu_mem_util }})
+          Launch script: ~/scripts/{{ track_stem }}-start.sh
+
+          === Container log commands ===
+          View logs:  podman logs -f {{ docker_container_name }}
+          Tail last 100 lines:  podman logs --tail 100 {{ docker_container_name }}
+          View since startup:  podman logs --since 24h {{ docker_container_name }}
+      tags: [podman, deploy]

@@ -1,0 +1,45 @@
+# =============================================================================
+# hf-download-repo.yml
+# Downloads an ENTIRE HuggingFace repo (safetensors + config + tokenizer) into
+# a local directory — the layout vLLM expects. Skips the download when the
+# repo's config.json already exists on disk.
+#
+# Include with:
+#   hf_repo     HF repo id (e.g. cyankiwi/Qwen3.8-27B-AWQ-INT4)
+#   _repo_dir   local dir to download into (passed to `hf download --local-dir`)
+#   hf_token_lookup  HF token string ("" => public/no-token download)
+# =============================================================================
+---
+- name: "Hf-download-repo: check if repo already present"
+  ansible.builtin.stat:
+    path: "{{ _repo_dir }}/config.json"
+  register: _repo_config_stat
+  tags: [model]
+
+- name: "Hf-download-repo: fetch whole repo (with token)"
+  ansible.builtin.command:
+    cmd: >-
+      hf download {{ hf_repo }} --token "{{ hf_token_lookup }}"
+      --local-dir {{ _repo_dir }}
+  when:
+    - not _repo_config_stat.stat.exists
+    - hf_token_lookup | length > 0
+  changed_when: true
+  tags: [model]
+
+- name: "Hf-download-repo: fetch whole repo (public, no token)"
+  ansible.builtin.command:
+    cmd: >-
+      hf download {{ hf_repo }} --local-dir {{ _repo_dir }}
+  when:
+    - not _repo_config_stat.stat.exists
+    - hf_token_lookup | length == 0
+  changed_when: true
+  tags: [model]
+
+- name: "Hf-download-repo: verify repo landed"
+  ansible.builtin.stat:
+    path: "{{ _repo_dir }}/config.json"
+  register: _repo_config_after
+  failed_when: not _repo_config_after.stat.exists
+  tags: [model]

@@ -252,6 +252,48 @@ Summary (2-run ranges):
   decode and ~470–570 t/s prefill. Still interactive, but far from the
   short-context 36–46 t/s.
 
+## vLLM XPU track (halo1, ReBAR) — 2026-10-01
+
+New track: `qwen38-27b-vllm-xpu-podman.yml` — vLLM 0.30.0 on the XPU backend
+(`vllm/vllm-openai-xpu:latest`, torch-xpu + vllm-xpu-kernels), AWQ W4A16
+text-only artifact (`philbert440/Qwen3.8-27B-W4A16-AWQ`, 18.2 GiB), fp8 KV
+cache, `--gpu-memory-utilization 0.95`, port 8185.
+
+**Context ceiling:** 18.2 GiB weights + ~3 GiB activations leave ~1.3 GiB paged
+KV on the 24 GB card → **32000 ctx** (vLLM-computed). The multimodal
+`cyankiwi` AWQ (19.6 GiB) left *negative* KV and was rejected; text-only is
+mandatory on 24 GB.
+
+`benchmarks/vllm_bench.py` (single-stream cold-prefill/warm-decode + concurrency):
+
+```
+[single] prompt_tokens=6890 completion_tokens=256
+[single] decode: 22.9 tok/s  (43.6 ms/tok)
+[single] prefill: 1382.1 tok/s
+[conc n=1] wall=5.4s  total_tok=128   aggregate=23.6 tok/s  avg_latency=5.4s
+[conc n=4] wall=6.1s  total_tok=512   aggregate=83.7 tok/s  avg_latency=6.1s
+[conc n=8] wall=11.9s total_tok=1024  aggregate=86.0 tok/s  avg_latency=7.7s
+```
+
+vs the llama.cpp SYCL dense track (same card, 200k ctx, MTP speculation):
+
+| Metric | vLLM XPU (32k) | llama.cpp SYCL (200k) | Winner |
+|---|---:|---:|---|
+| Single-stream decode | 22.9 t/s | 36–46 t/s | llama.cpp |
+| Prefill (6.9k prompt) | **1382 t/s** | 614–660 t/s | **vLLM 2.1×** |
+| Concurrent n=4 | **83.7 t/s** agg | ~23 t/s (1 slot) | **vLLM 3.6×** |
+| Concurrent n=8 | **86.0 t/s** agg | ~23 t/s (1 slot) | **vLLM 3.7×** |
+| Max context | 32k | 200k | llama.cpp |
+
+- **vLLM wins where it's designed to:** prefill (2.1×) and concurrent
+  throughput (3.6× at n=4). Continuous batching + paged KV keep the GPU fed
+  across requests.
+- **llama.cpp wins single-stream:** MTP speculation gives 36–46 t/s decode vs
+  vLLM's 22.9 (no speculation in this XPU build), and 200k vs 32k context.
+- **Verdict:** for a single agentic session, llama.cpp dense is still the
+  better default (faster decode, 6× the context). vLLM earns its place for
+  multi-request / high-prefill workloads on the same card.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window

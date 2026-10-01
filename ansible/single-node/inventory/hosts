@@ -18,6 +18,11 @@
 [sycl]
 halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
 
+# XPU backend — vLLM XPU tracks (require Resizable BAR):
+#   qwen38-27b-vllm-xpu (Qwen3.8-27B AWQ W4A16, 32k ctx, port 8185)
+[xpu]
+halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
+
 # Legacy rigs — no ReBAR; cannot run any track (the rebar-gate fails by
 # design). Kept for reference; no play targets this group.
 [legacy]
@@ -25,3 +30,4 @@ b60 ansible_connection=local ansible_user=jdella
 
 [aiservers:children]
 sycl
+xpu
