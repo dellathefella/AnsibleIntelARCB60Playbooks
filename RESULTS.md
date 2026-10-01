@@ -206,6 +206,52 @@ vs the P53/Vulkan baseline (same prompts, post-tuning):
   covers the whole VRAM.
 - Run-to-run variance on halo1 is much tighter than the P53's ±20–30%.
 
+## Long-context stress (`bench/longctx.py`) — 16k..128k prompt tokens
+
+Same cold-prefill/warm-decode methodology at 4×–64× the prompt size. Two
+consecutive runs on halo1 (SYCL dense, `-c 200000`) vs Halogen:
+
+```
+run1
+B60-sycl   Qwen3.8-27B     16k         15883        670.6      257        26.1
+B60-sycl   Qwen3.8-27B     32k         31982        636.2      257        28.3
+B60-sycl   Qwen3.8-27B     64k         64743        570.0      257        16.3
+B60-sycl   Qwen3.8-27B     128k       130262        468.8      257        17.0
+Halogen    Flash-Next      16k         15884       1489.8      257        39.1
+Halogen    Flash-Next      32k         31982       1557.5      257        40.6
+Halogen    Flash-Next      64k         64742       1502.8      257        39.8
+Halogen    Flash-Next      128k       130263       1420.0      257        46.0
+
+run2
+B60-sycl   Qwen3.8-27B     16k         15882        640.6      257        30.5
+B60-sycl   Qwen3.8-27B     32k         31979        635.7      257        26.5
+B60-sycl   Qwen3.8-27B     64k         64741        569.4      257        26.5
+B60-sycl   Qwen3.8-27B     128k       130262        468.8      257        19.8
+Halogen    Flash-Next      16k         15881       1489.1      257        51.0
+Halogen    Flash-Next      32k         31983       1556.2      257        49.0
+Halogen    Flash-Next      64k         64742       1503.9      257        45.3
+Halogen    Flash-Next      128k       130260       1419.7      257        39.7
+```
+
+Summary (2-run ranges):
+
+| Prompt | B60 prefill | B60 decode | Halogen prefill | Halogen decode |
+|---|---:|---:|---:|---:|
+| 16k | 641–671 | 26–31 | 1489–1490 | 39–51 |
+| 32k | 636 | 27–28 | 1556–1558 | 41–49 |
+| 64k | 569–570 | 16–27 | 1503–1504 | 45 |
+| 128k | 469 | 17–20 | 1420 | 40–46 |
+
+- **B60 degrades with context on both axes:** prefill −30% (670→469) and decode
+  −35–40% (~28→~18) from 16k→128k — attention reads the whole q4_0 KV cache
+  per token, adding bandwidth pressure on top of the 14.3 GB weights.
+- **Halogen stays flat** (~1420–1560 prefill, ~40–50 decode) across the whole
+  range — the gap widens to ~2.5–3× at 128k.
+- **Practical read:** the 200k context on the B60 is *capacity*, not comfort.
+  Up to ~32k it's genuinely usable (26+ t/s decode); past 64k expect ~17–27 t/s
+  decode and ~470–570 t/s prefill. Still interactive, but far from the
+  short-context 36–46 t/s.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window

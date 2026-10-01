@@ -124,7 +124,9 @@ Full raw outputs + environment: **[RESULTS.md](RESULTS.md)**.
 > Strix Halo rig, the dense 27B on SYCL hits **~36–46 t/s decode** and
 > **~614–660 t/s long-prefill** — ~2× the P53/Vulkan prefill, +20–50% decode,
 > and no small-ctx cliff. It now beats Halogen on short-prompt prefill.
-> Raw runs in RESULTS.md.
+> **Long-context (`bench/longctx.py`):** the 200k ctx is capacity, not comfort —
+> at 128k prompts the B60 drops to ~17–20 t/s decode / ~469 t/s prefill vs
+> Halogen's flat ~40+ / ~1420. Comfortable zone is ≤32k. Raw runs in RESULTS.md.
 
 Scripts: `bench/bench.py` (B60 vs Halogen) and `bench/variants.py` (quant-variant
 shootout). Methodology per prompt: a unique nonce forces a **cold prefill** call
@@ -228,4 +230,5 @@ bench/
   tune.py              flag/env tuning harness (sequential configs, rootful)
   moe_probe.py         MoE candidates + corrected variant retests
   ov_probe.py          OpenVINO feasibility probe (device list + CPU decode)
+  longctx.py           Long-context stress (16k..128k prompt tokens)
 ```
