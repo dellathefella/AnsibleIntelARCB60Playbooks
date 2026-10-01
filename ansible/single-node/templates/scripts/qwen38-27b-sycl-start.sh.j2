@@ -36,7 +36,7 @@ start_container() {
     -p ${PORT}:${PORT} \
     --entrypoint /app/llama-server \
     "$IMAGE" \
-{{ _llama_args }}
+    {{ _llama_args | replace('\n', ' ') }}
 }
 
 stop_container() {
