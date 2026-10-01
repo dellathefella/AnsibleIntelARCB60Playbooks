@@ -1,41 +1,35 @@
 # B60 · Qwen 3.8 27B · llama.cpp via Podman
 
 Ansible wiring for running **Qwen 3.8 27B** on an **Intel Arc Pro B60** (Battlemage G21)
-using a **detached Podman container** (no systemd unit). The engine is served through an
-OpenAI-compatible API and an `opencode.json` is emitted on the controller.
+using a **detached rootful Podman container** (no systemd unit). The engine is served
+through an OpenAI-compatible API and an `opencode.json` is emitted on the controller.
 
-## The one thing that matters on Arc
+## The one thing that matters: ReBAR is mandatory
 
-The tuned GGUFs (repo `Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF`) are built with
-**0 I-Quant tensors** so the XMX/DPAS matrix units stay on the GPU. That is a **SYCL**
-concern. On this rig the B60 is a **Thunderbolt eGPU with no Resizable BAR**, and the
-Intel compute runtime refuses to create a Level-Zero device without it:
+**Resizable BAR is a hard requirement — no opt-out.** Without a large prefetchable
+BAR the Level-Zero device cannot be created, and the Vulkan fallback performs
+abysmally on this workload (~5 t/s small-context cliff on the old P53). The
+preflight measures the largest prefetchable BAR on the Arc PCI device and **fails
+fast** with the measured size if it is under 1 GiB.
 
-```
-WARNING: Resizable BAR not detected for device 0000:31:00.0   -> 0 SYCL GPUs
-```
+**SYCL/Level-Zero (`full-intel` image) is the only supported backend**, and
+podman runs **rootful** (hard-coded `become: true`).
 
-**Vulkan does not need ReBAR** (the BAR only limits CPU-mapped access), so the role
-auto-selects the Vulkan backend:
-
-```
-Vulkan0: Intel(R) Arc(tm) Pro B60 Graphics (BMG G21) (24480 MiB, 21574 MiB free)
-```
-
-Backend selection is automatic: **SYCL if a `level_zero:gpu` exists, else Vulkan.**
-Force with `-e llama_backend=sycl|vulkan`.
+| Rig | Link | ReBAR | Status |
+|---|---|:---:|---|
+| `halo1` — Strix Halo desktop (Ryzen AI Max+ 395) | TB4 | **32 GiB** | **supported** — SYCL live |
+| `b60` — ThinkPad P53 (i9-9880H) | TB3/4 | 256 MiB | legacy — fails the gate by design |
 
 ## Run it
 
-Runs **rootful** by default (`podman_as_root: true`), so pass `--ask-become-pass`
-(or configure a NOPASSWD sudoers rule).
+Runs **rootful** — pass `-K` (`--ask-become-pass`) or configure NOPASSWD sudoers.
 
 ```bash
-# local (this host owns the Thunderbolt B60) — full real model, 24GB card
-ansible-playbook site.yml --ask-become-pass
+# deploy the dense 27B track on halo1 (ReBAR-verified, SYCL)
+ansible-playbook site.yml --limit halo1 -K
 
 # staged / smoke test with a tiny stand-in model (no 14GB download)
-ansible-playbook site.yml \
+ansible-playbook site.yml --limit halo1 -K \
   -e model_repo=Qwen/Qwen2.5-0.5B-Instruct-GGUF \
   -e model_file=qwen2.5-0.5b-instruct-q4_0.gguf \
   -e model_sha256=7671c0c304e6ce5a7fc577bcb12aba01e2c155cc2efd29b2213c95b18edaf6ed \
@@ -79,23 +73,24 @@ Quit and restart opencode to load it (config is not hot-reloaded).
 
 ## Going remote
 
-Edit `inventory/hosts.yml`: swap the `local` connection for `ssh` + the B60 host's
-address/user. Nothing else changes — the render node is auto-detected on whatever host
-you target.
+`inventory/hosts.yml` already carries **halo1** (`ssh`, `jdella@10.0.1.67`)
+alongside the legacy local `b60`. Target a host with `--limit`. Nothing else
+changes — the render node, PCI id and ReBAR window are auto-detected on whatever
+host you target.
 
 ## Tracks (dense / MoE)
 
 Two model tracks share the one GPU — **mutually exclusive at runtime**; each
 control script stops its sibling before claiming the device.
 
-| Track | Model | Ctx | Decode t/s | Service / port |
+| Track | Model | Ctx | Decode t/s (P53/Vulkan) | Service / port |
 |---|---|---:|---:|---|
 | `dense` | Qwen3.8-27B IQ3_S→Q4_K (MTP) | 200k | ~27–35 | `llama-b60` / 8183 |
 | `moe` | Qwen3.6-35B-A3B Q3_K_L (MTP) | 131k | ~26–28 | `llama-b60-moe` / 8184 |
 
 ```bash
-ansible-playbook site.yml                          # provision both, start active_track
-ansible-playbook site.yml --tags moe -e active_track=moe     # MoE only
+ansible-playbook site.yml --limit halo1 -K                      # provision both, start active_track
+ansible-playbook site.yml --limit halo1 -K --tags moe -e active_track=moe   # MoE only
 sudo ~/scripts/llama-b60.sh start                  # switch to dense (stops moe)
 sudo ~/scripts/llama-b60-moe.sh start              # switch to moe (stops dense)
 ```
@@ -170,8 +165,12 @@ regardless; the env var is the safety net.
 ### Tuning experiments (`bench/tune.py`)
 
 vLLM is **not viable** here: its Intel path is XPU/SYCL-only (no Vulkan backend),
-and SYCL needs the ReBAR this Thunderbolt link doesn't expose. All tuning is
-llama.cpp/Vulkan. Measured (decode t/s, current Q4_K):
+and SYCL needs the ReBAR this Thunderbolt link doesn't expose. **OpenVINO is
+likewise rejected**: its GPU plugin is Level-Zero-only (probe shows `['CPU']`
+devices on this rig), and the CPU fallback is bandwidth-bound — measured ~4.6 t/s
+at 7B int4, extrapolating to ~1.5 t/s at 27B vs 27–35 t/s on Vulkan
+(`bench/ov_probe.py`, details in RESULTS.md). All tuning is llama.cpp/Vulkan.
+Measured (decode t/s, current Q4_K):
 
 | Change | Result | Action |
 |---|---|---|
@@ -222,4 +221,5 @@ bench/
   variants.py          quant-variant shootout (sequential on-GPU, rootful)
   tune.py              flag/env tuning harness (sequential configs, rootful)
   moe_probe.py         MoE candidates + corrected variant retests
+  ov_probe.py          OpenVINO feasibility probe (device list + CPU decode)
 ```

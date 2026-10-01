@@ -5,7 +5,6 @@
       {{ (
         ['-m', '/models/' ~ model_file]
         + (['--mmproj', '/models/' ~ mmproj_file] if (enable_vision | bool and (mmproj_file | length > 0)) else [])
-        + (['--device', llama_device_arg] if selected_backend == 'vulkan' else [])
         + ['-ngl', n_gpu_layers | string, '-fa', flash_attn,
            '-c', ctx_size | string, '-b', batch_size | string, '-ub', ubatch_size | string,
            '-t', threads | string, '-tb', threads_batch | string,
@@ -22,7 +21,7 @@
 
 - name: Compute desired config hash
   ansible.builtin.set_fact:
-    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args ~ '|' ~ vulkan_disable_host_visible_vidmem | default(false) | string) | hash('sha256') }}"
+    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args) | hash('sha256') }}"
     run_script: "{{ scripts_dir }}/{{ service_name }}.sh"
 
 - name: Drop control script on the target host
@@ -35,7 +34,7 @@
   ansible.builtin.command: "{{ run_script }} start"
   register: engine_start
   changed_when: "'already running' not in engine_start.stdout"
-  become: "{{ podman_as_root | bool }}"
+  become: true
   when:
     - start_service | bool
     - llama_track == active_track

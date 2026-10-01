@@ -146,6 +146,24 @@ Findings: Q3_K decodes slower than Q4_K on Vulkan despite fewer bytes
 (kernel-path inversion); draft-n-max 8 hits 100% acceptance but loses to 5
 (verification cost); MoE Q4_K_S is the fastest decode measured on this rig.
 
+## OpenVINO probe (`bench/ov_probe.py`) — rejected
+
+OpenVINO via podman (`openvino/ubuntu22_runtime`, 2026.4), rootless:
+
+```
+ov available_devices: ['CPU']     # no GPU — Level Zero refuses without ReBAR
+Qwen2.5-Coder-0.5B int4, CPU:  48.1 / 50.6 / 50.8 t/s decode (LATENCY hint)
+Qwen2.5-Coder-7B   int4, CPU:   4.58 / 4.53 / 4.64 t/s decode (bandwidth-bound)
+```
+
+- **GPU path:** dead on this rig for the same reason SYCL/vLLM are — the OV GPU
+  plugin is Level-Zero-only, and the compute runtime won't create an L0 device
+  without Resizable BAR (probe shows CPU only).
+- **CPU path:** works end-to-end but decode is DDR4-bandwidth-bound; 27B int4
+  (~15 GB weights) extrapolates to **~1.3–1.6 t/s** vs 27–35 t/s on the Vulkan
+  track (~20× slower). OV GenAI also has no MTP/NextN draft-head support, so the
+  tuned GGUFs' speculative boost is unusable. Not wired into Ansible.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window
@@ -162,3 +180,5 @@ Findings: Q3_K decodes slower than Q4_K on Vulkan despite fewer bytes
   only large effects are conclusive.
 - **vLLM:** Intel support is XPU/SYCL-only (no Vulkan backend) → blocked by the
   same missing ReBAR. llama.cpp/Vulkan is the only GPU path on this rig.
+- **OpenVINO:** GPU plugin is L0-only → also blocked; CPU-only fallback measured
+  ~4.6 t/s at 7B int4 (see OpenVINO probe above). Rejected.

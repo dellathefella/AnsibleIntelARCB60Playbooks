@@ -4,16 +4,13 @@
 #  llama.cpp served as a detached Podman container. Backend auto-selects SYCL vs Vulkan.
 # ============================================================================
 
-# ---- Backend selection -------------------------------------------------------
-# auto   -> prefer SYCL/Level-Zero (fastest, needs Resizable BAR); fall back to
-#           Vulkan (works without ReBAR, e.g. Thunderbolt eGPU).
-# sycl   -> force SYCL (full-intel image). Fails if no level_zero:gpu device.
-# vulkan -> force Vulkan (server-vulkan image).
-llama_backend: auto
-
-# Images (pinned families; override the tag to lock a build)
-llama_image_sycl:   ghcr.io/ggml-org/llama.cpp:full-intel
-llama_image_vulkan: ghcr.io/ggml-org/llama.cpp:server-vulkan
+# ---- Backend -----------------------------------------------------------------
+# ReBAR is MANDATORY (no opt-out). Without a large prefetchable BAR the
+# Level-Zero device cannot be created, and the Vulkan fallback performs
+# abysmally on this workload (small-ctx cliff, ~5 t/s). The play fails fast
+# with the measured BAR size. SYCL/Level-Zero (full-intel image) is the only
+# supported backend, and podman runs ROOTFUL.
+llama_image: ghcr.io/ggml-org/llama.cpp:full-intel
 
 # ---- Tracks ------------------------------------------------------------------
 # Two model tracks share the one GPU (mutually exclusive at runtime; each track's
@@ -121,13 +118,6 @@ spec_ngram_mod_n_max:   5
 spec_draft_n_max:       5
 spec_draft_p_min:       0.5
 
-# ---- Vulkan backend knobs ---------------------------------------------------
-# No-ReBAR workaround (Thunderbolt eGPU): host-visible VRAM is capped at the
-# 256MB BAR; small KV caches land there and decode collapses (~5 t/s at -c 8192).
-# Disabling host-visible vidmem keeps everything in device memory: 4.5x faster
-# at small contexts, neutral at large. Always keep this on for TB/no-ReBAR rigs.
-vulkan_disable_host_visible_vidmem: true
-
 # Server request slots. opencode is single-stream; 1 slot measured ~+10% decode
 # in round 1 (noisy). Set >1 (or 0 = server default of 4) if you want to serve
 # concurrent clients instead of maximizing single-stream speed.
@@ -138,11 +128,11 @@ download_model: true
 pull_image:     true
 start_service:  true
 
-# ---- Rootful vs rootless podman ------------------------------------------
-# Default is ROOTFUL podman (sudo). Run the playbook with --ask-become-pass (or a
-# NOPASSWD sudoers rule). NOTE: rootful podman uses a SEPARATE image store, so the
-# image is re-pulled as root on first use. Set false to go back to rootless.
-podman_as_root: true
+# ---- Podman: ROOTFUL only -------------------------------------------------
+# Rootful podman is mandatory (hard-coded become: true — no rootless option).
+# Run the playbook with -K (--ask-become-pass) or a NOPASSWD sudoers rule.
+# NOTE: rootful podman uses a SEPARATE image store, so the image is re-pulled
+# as root on first use.
 
 # ---- opencode config output ----------------------------------------------
 opencode_provider_id:   qwen-arc
