@@ -65,13 +65,28 @@ cache_type_v:  q4_0       # -ctv
 # ---- Speculative decoding (MTP draft head + ngram-mod) ---------------------
 # The tuned GGUFs keep the Layer-64 NextN draft head in Q6_K, so MTP works with
 # no separate draft model.
+# Measured on this rig: draft-n-max 5 gives 98-100% acceptance and the best
+# decode (~31-32 t/s). 8 does NOT fit in VRAM at 200k ctx (OOM). Dropping
+# ngram-mod costs ~25% decode — keep both.
 enable_speculative:    true
 spec_type:             "ngram-mod,draft-mtp"
 spec_ngram_mod_n_match: 24
 spec_ngram_mod_n_min:   1
-spec_ngram_mod_n_max:   3
-spec_draft_n_max:       3
+spec_ngram_mod_n_max:   5
+spec_draft_n_max:       5
 spec_draft_p_min:       0.5
+
+# ---- Vulkan backend knobs ---------------------------------------------------
+# No-ReBAR workaround (Thunderbolt eGPU): host-visible VRAM is capped at the
+# 256MB BAR; small KV caches land there and decode collapses (~5 t/s at -c 8192).
+# Disabling host-visible vidmem keeps everything in device memory: 4.5x faster
+# at small contexts, neutral at large. Always keep this on for TB/no-ReBAR rigs.
+vulkan_disable_host_visible_vidmem: true
+
+# Server request slots. opencode is single-stream; 1 slot measured ~+10% decode
+# in round 1 (noisy). Set >1 (or 0 = server default of 4) if you want to serve
+# concurrent clients instead of maximizing single-stream speed.
+parallel_slots: 1
 
 # ---- Staged-run toggles (handy for testing) -------------------------------
 download_model: true

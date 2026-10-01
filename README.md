@@ -105,28 +105,57 @@ shootout). Methodology per prompt: a unique nonce forces a **cold prefill** call
   that makes the current model fast; with ngram-only it sits at ~3–5 t/s. Same
   Q4_K type but ~2 GB larger and without MTP = a downgrade on this rig.
 
-### Key operational discovery: context size drives decode speed
+### Key operational discovery: the small-context cliff (and its fix)
 
-On this Vulkan/B60 setup, decode throughput is strongly tied to `-c`:
+Decode throughput collapses at small `-c` on this rig:
 
-| `-c` | current Q4_K decode t/s |
-|---:|---:|
-| 8192 | ~4.6 (crippled) |
-| 32768 | ~13–17 |
-| 200000 | ~22–35 (full speed) |
+| `-c` | decode t/s (before fix) | decode t/s (with fix) |
+|---:|---:|---:|
+| 8192 | ~4.6–5.4 | **~24.6** |
+| 32768 | ~13–17 | — |
+| 200000 | ~22–35 | ~21–34 |
 
-The deployed `-c 200000` is **correct — do not lower it** or throughput collapses.
-(The exact mechanism is unclear; it interacts with the unified-KV + MTP path.)
+**Root cause (no-ReBAR):** host-visible VRAM is capped at the 256 MB BAR. The
+llama.cpp Vulkan backend allocates *small* KV caches in host-visible memory —
+which over Thunderbolt without ReBAR is a pathologically slow path. Large
+contexts exceed the host-visible budget and land in fast device-local memory,
+which is why `-c 200000` was always fine.
+
+**Fix (deployed):** `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` forces device-local
+allocation — 4.5× faster at small contexts, neutral at large. Keep `-c 200000`
+regardless; the env var is the safety net.
+
+### Tuning experiments (`bench/tune.py`)
+
+vLLM is **not viable** here: its Intel path is XPU/SYCL-only (no Vulkan backend),
+and SYCL needs the ReBAR this Thunderbolt link doesn't expose. All tuning is
+llama.cpp/Vulkan. Measured (decode t/s, current Q4_K):
+
+| Change | Result | Action |
+|---|---|---|
+| `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` | fixes small-ctx cliff, neutral at 200k | **adopted** |
+| `--parallel 1` | +~10% in round 1 (single stream); didn't replicate in round 2 | **adopted** (opencode is single-stream) |
+| `--spec-draft-n-max 5` (+ngram n-max 5) | ~31–32 t/s, draft acceptance **98–100%** | **adopted** |
+| `--spec-draft-n-max 8` | OOM at 200k ctx (+820 MB MTP draft ctx) | rejected |
+| drop `ngram-mod` (MTP only) | −25% decode | rejected |
+| `-b/-ub 2048` | prefill flat, long-ctx decode worse (12.4 vs 20.0) | rejected |
+| `GGML_VK_FORCE_MMVQ=1` | noise-level | not adopted |
+
+**Noise warning:** B60-over-TB4 run-to-run variance is ±20–30% on identical
+configs — only large effects (cliff fix, 3.2BPW, ngram-mod removal) are
+conclusive; treat ±10% deltas as unproven.
 
 ### B60 vs Halogen (Flash-Next) reference
 
 | Task | B60 prefill | B60 decode | Halogen prefill | Halogen decode |
 |---|---:|---:|---:|---:|
-| code_review (~200 tok) | ~190 | ~30 | ~150 | ~45 |
-| code_gen (~120 tok) | ~120 | ~29 | ~120 | ~41 |
-| long_review (~2950 tok) | ~266 | ~23 | ~930 | ~41 |
+| code_review (~200 tok) | ~129 | ~34 | ~147 | ~56 |
+| code_gen (~120 tok) | ~116 | ~30 | ~107 | ~44 |
+| long_review (~2950 tok) | ~232 | ~21 | ~871 | ~42 |
 
-Halogen is ~1.4–1.8× faster on decode and ~3.5× faster on long-context prefill.
+(Post-tuning numbers, same run for both endpoints.)
+
+Halogen is ~1.6–2× faster on decode and ~3.8× faster on long-context prefill.
 Caveats: different model + engine + network (Halogen is remote, so its raw compute
 edge is understated); single-stream; MTP on both. **B60-over-Thunderbolt decode is
 noisy** — run-to-run variance on identical configs is large. The 3.2BPW signal
@@ -149,4 +178,5 @@ roles/b60_llama/
 bench/
   bench.py             B60 vs Halogen (cold prefill + warm decode)
   variants.py          quant-variant shootout (sequential on-GPU, rootful)
+  tune.py              flag/env tuning harness (sequential configs, rootful)
 ```

@@ -16,12 +16,13 @@
             '--spec-ngram-mod-n-max', spec_ngram_mod_n_max | string,
             '--spec-draft-n-max', spec_draft_n_max | string,
             '--spec-draft-p-min', spec_draft_p_min | string] if enable_speculative | bool else [])
+        + (['--parallel', parallel_slots | string] if (parallel_slots | default(0) | int) > 0 else [])
         + ['--host', '0.0.0.0', '--port', api_port | string]
       ) | join(' ') }}
 
 - name: Compute desired config hash
   ansible.builtin.set_fact:
-    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args) | hash('sha256') }}"
+    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args ~ '|' ~ vulkan_disable_host_visible_vidmem | default(false) | string) | hash('sha256') }}"
     run_script: "{{ scripts_dir }}/{{ service_name }}.sh"
 
 - name: Drop control script on the target host

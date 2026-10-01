@@ -40,6 +40,10 @@ RUN_ARGS=(
 {% if selected_backend == 'sycl' %}
 RUN_ARGS+=( -e UR_LOADER_USE_LEVEL_ZERO_V2=0 -e ONEAPI_DEVICE_SELECTOR=level_zero:0 -e ZE_AFFINITY_MASK=0 )
 {% endif %}
+{% if selected_backend == 'vulkan' and (vulkan_disable_host_visible_vidmem | default(false) | bool) %}
+# no-ReBAR workaround: keep KV/buffers out of the 256MB host-visible BAR window
+RUN_ARGS+=( -e GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1 )
+{% endif %}
 
 is_running() { podman ps -q --filter "name=^${NAME}$" | grep -q .; }
 exists()     { podman inspect "$NAME" >/dev/null 2>&1; }
