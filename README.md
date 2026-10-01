@@ -83,10 +83,10 @@ host you target.
 Two model tracks share the one GPU — **mutually exclusive at runtime**; each
 control script stops its sibling before claiming the device.
 
-| Track | Model | Ctx | Decode t/s (P53/Vulkan) | Service / port |
+| Track | Model | Ctx | Decode t/s (halo1 SYCL) | Service / port |
 |---|---|---:|---:|---|
-| `dense` | Qwen3.8-27B IQ3_S→Q4_K (MTP) | 200k | ~27–35 | `llama-b60` / 8183 |
-| `moe` | Qwen3.6-35B-A3B Q3_K_L (MTP) | 131k | ~26–28 | `llama-b60-moe` / 8184 |
+| `dense` | Qwen3.8-27B IQ3_S→Q4_K (MTP) | 200k | ~36–46 | `llama-b60` / 8183 |
+| `moe` | Qwen3.6-35B-A3B Q3_K_L (MTP) | 131k | ~26–28 (P53 Vulkan) | `llama-b60-moe` / 8184 |
 
 ```bash
 ansible-playbook site.yml --limit halo1 -K                      # provision both, start active_track
@@ -119,6 +119,12 @@ model, or restart the sibling service.
 ## Benchmark findings (B60 / Vulkan)
 
 Full raw outputs + environment: **[RESULTS.md](RESULTS.md)**.
+
+> **halo1 SYCL update (2026-10-01):** with ReBAR enabled (32 GiB BAR) on the
+> Strix Halo rig, the dense 27B on SYCL hits **~36–46 t/s decode** and
+> **~614–660 t/s long-prefill** — ~2× the P53/Vulkan prefill, +20–50% decode,
+> and no small-ctx cliff. It now beats Halogen on short-prompt prefill.
+> Raw runs in RESULTS.md.
 
 Scripts: `bench/bench.py` (B60 vs Halogen) and `bench/variants.py` (quant-variant
 shootout). Methodology per prompt: a unique nonce forces a **cold prefill** call

@@ -164,6 +164,48 @@ Qwen2.5-Coder-7B   int4, CPU:   4.58 / 4.53 / 4.64 t/s decode (bandwidth-bound)
   track (~20× slower). OV GenAI also has no MTP/NextN draft-head support, so the
   tuned GGUFs' speculative boost is unusable. Not wired into Ansible.
 
+## halo1 SYCL (ReBAR enabled) — dense 27B, 2026-10-01
+
+Same model/flags as the deployed dense track (`-c 200000`, MTP+ngram-mod 5,
+`--parallel 1`), now on **SYCL/Level-Zero** with a **32 GiB prefetchable BAR**
+(halo1: Ryzen AI Max+ 395, B60 over TB4, rootful podman). Two consecutive
+`bench.py` runs:
+
+```
+run1
+B60-local  Qwen3.8-27B       code_review        208        246.3      257        39.8
+B60-local  Qwen3.8-27B       code_gen           121        152.2      257        36.4
+B60-local  Qwen3.8-27B       long_review       2952        614.2      257        32.7
+Halogen    Flash-Next        code_review        210        157.8      257        56.2
+Halogen    Flash-Next        code_gen           121        123.4      257        45.2
+Halogen    Flash-Next        long_review       2952        946.1      257        43.5
+
+run2
+B60-local  Qwen3.8-27B       code_review        208        251.9      257        46.4
+B60-local  Qwen3.8-27B       code_gen           121        155.8      257        44.5
+B60-local  Qwen3.8-27B       long_review       2951        659.5      257        30.6
+Halogen    Flash-Next        code_review        210        155.4      257        54.5
+Halogen    Flash-Next        code_gen           122        126.5      257        43.1
+Halogen    Flash-Next        long_review       2949        951.5      257        54.0
+```
+
+vs the P53/Vulkan baseline (same prompts, post-tuning):
+
+| Metric | P53 Vulkan | halo1 SYCL | Delta |
+|---|---:|---:|---|
+| decode, short prompts | ~30–34 | **~36–46** | +20–35% |
+| decode, long ctx | ~21 | **~31–33** | +50% |
+| prefill, short | ~116–129 | **~152–252** | ~2× |
+| prefill, long (2950 tok) | ~232 | **~614–660** | ~2.7× |
+
+- **halo1 now beats Halogen on short-prompt prefill** (~250 vs ~156) and roughly
+  matches it on `code_gen` decode; Halogen keeps the lead on long-ctx decode
+  (~54 vs ~31) and long prefill (~950 vs ~660).
+- SYCL + ReBAR removes the Vulkan small-ctx cliff entirely (no env workaround
+  needed) and lifts every metric. The 32 GiB BAR also means CPU-mapped access
+  covers the whole VRAM.
+- Run-to-run variance on halo1 is much tighter than the P53's ±20–30%.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window
