@@ -21,7 +21,7 @@
 
 - name: Compute desired config hash
   ansible.builtin.set_fact:
-    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ llama_exec_args) | hash('sha256') }}"
+    b60_hash: "{{ (llama_image ~ '|' ~ b60_render_node ~ '|' ~ api_bind | default('127.0.0.1') ~ '|' ~ llama_exec_args) | hash('sha256') }}"
     run_script: "{{ scripts_dir }}/{{ service_name }}.sh"
 
 - name: Drop control script on the target host
@@ -41,7 +41,7 @@
 
 - name: Wait for the API to become healthy
   ansible.builtin.uri:
-    url: "http://{{ api_host }}:{{ api_port }}/health"
+    url: "http://127.0.0.1:{{ api_port }}/health"
     return_content: true
   register: health
   until: health.status == 200

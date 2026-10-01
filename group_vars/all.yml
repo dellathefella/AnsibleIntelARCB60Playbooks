@@ -90,6 +90,11 @@ scripts_dir:  "{{ ansible_env.HOME }}/scripts"
 
 # ---- Service / API ---------------------------------------------------------
 service_name: llama-b60
+# api_bind: what podman binds the published port to. 0.0.0.0 = reachable from
+# the LAN (unauthenticated — only do this on a trusted network).
+# api_host: the address CLIENTS use (health checks, opencode baseURL). On the
+# serving host itself 127.0.0.1 works; remote rigs override it in host_vars.
+api_bind: "0.0.0.0"
 api_host: "127.0.0.1"
 api_port: 8183
 

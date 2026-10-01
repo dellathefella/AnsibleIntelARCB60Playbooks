@@ -5,7 +5,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Qwen 3.8 27B (Arc B60)",
       "options": {
-        "baseURL": "http://127.0.0.1:8183/v1"
+        "baseURL": "http://10.0.1.67:8183/v1"
       },
       "models": {
         "qwen3.8-27b": {
@@ -22,7 +22,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "Qwen 3.6 35B A3B MoE (Arc B60)",
       "options": {
-        "baseURL": "http://127.0.0.1:8184/v1"
+        "baseURL": "http://10.0.1.67:8184/v1"
       },
       "models": {
         "qwen3.6-35b-a3b": {

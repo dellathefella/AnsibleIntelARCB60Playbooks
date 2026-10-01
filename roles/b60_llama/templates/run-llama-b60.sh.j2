@@ -18,6 +18,7 @@ SIBLING="{{ sibling_service | default('') }}"
 IMAGE="{{ llama_image }}"
 RENDER="{{ b60_render_node }}"
 MODELS="{{ models_dir }}"
+API_BIND="{{ api_bind | default('127.0.0.1') }}"
 API_HOST="{{ api_host }}"
 API_PORT="{{ api_port }}"
 HASH="{{ b60_hash }}"
@@ -32,7 +33,7 @@ RUN_ARGS=(
   --device "$RENDER"
   --security-opt label=disable
   -v "$MODELS:/models:ro"
-  -p "${API_HOST}:${API_PORT}:${API_PORT}"
+  -p "${API_BIND}:${API_PORT}:${API_PORT}"
   --label "b60_hash=${HASH}"
   --entrypoint /app/llama-server
 )
