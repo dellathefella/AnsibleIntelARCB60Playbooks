@@ -1,0 +1,71 @@
+---
+# =============================================================================
+# install-hf-cli.yml
+# Install HuggingFace CLI (hf) for model downloads.
+#
+# Shared playbook: imported by bootstrap.yml.
+# Usage:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/shared/install-hf-cli.yml
+# =============================================================================
+
+- name: "Install-hf-cli — install HuggingFace CLI"
+  hosts: aiservers
+  gather_facts: true
+  become: true
+  tags: [install-hf-cli]
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. Install pip for the target distro
+    # -----------------------------------------------------------------------
+    - name: Install pip on Fedora
+      ansible.builtin.dnf:
+        name:
+          - python3-pip
+        state: present
+      when: ansible_os_family | lower == "fedora"
+      tags: [install-hf-cli, packages]
+
+    - name: Install pip on Debian/Ubuntu
+      ansible.builtin.apt:
+        name:
+          - python3-pip
+        state: present
+        update_cache: true
+      when:
+        - (ansible_facts['os_family'] | lower == "debian") or (ansible_facts['os_family'] | lower == "ubuntu")
+      tags: [install-hf-cli, packages]
+
+    - name: Install pip on Arch Linux
+      community.general.pacman:
+        name:
+          - python-pip
+        state: present
+        update_cache: true
+      when: ansible_os_family | lower == "archlinux"
+      tags: [install-hf-cli, packages]
+
+    # -----------------------------------------------------------------------
+    # 2. Install huggingface_hub via pip (distro-independent)
+    # -----------------------------------------------------------------------
+    - name: Install huggingface_hub via pip
+      ansible.builtin.pip:
+        name: huggingface_hub
+        state: present
+        extra_args: --break-system-packages
+      tags: [install-hf-cli, packages]
+
+    # -----------------------------------------------------------------------
+    # 3. Verify installation
+    # -----------------------------------------------------------------------
+    - name: Verify hf CLI is installed
+      ansible.builtin.command:
+        cmd: hf --version
+      register: hf_cli_version
+      changed_when: false
+      failed_when: false
+      tags: [install-hf-cli]
+
+    - name: Print hf CLI version
+      ansible.builtin.debug:
+        msg: "hf CLI installed: {{ hf_cli_version.stdout | default('VERSION UNKNOWN') }}"
+      tags: [install-hf-cli]

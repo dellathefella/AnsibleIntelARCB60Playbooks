@@ -1,0 +1,27 @@
+# =============================================================================
+# hosts — SINGLE-NODE inventory (topology: one B60 host, one model at a time)
+#
+# Hosts are grouped by GPU backend so playbooks target a backend (sycl)
+# instead of one model. `aiservers` is the union of all inference hosts and
+# is what the shared host-level plays target.
+#
+# Run the single-node bootstrap with this file:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/single-node/bootstrap.yml
+#
+# Become: plays run rootful. Feed the sudo password with -K, or set a
+# NOPASSWD sudoers rule for the podman commands.
+# =============================================================================
+
+# SYCL backend — llama.cpp SYCL tracks (require Resizable BAR):
+#   qwen38-27b-sycl (Qwen3.8-27B IQ3_S→Q4_K + MTP, 200k ctx, port 8183)
+#   qwen36-a3b-moe  (Qwen3.6-35B-A3B MoE UD-Q4_K_S, 32k ctx, port 8184)
+[sycl]
+halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
+
+# Legacy rigs — no ReBAR; cannot run any track (the rebar-gate fails by
+# design). Kept for reference; no play targets this group.
+[legacy]
+b60 ansible_connection=local ansible_user=jdella
+
+[aiservers:children]
+sycl

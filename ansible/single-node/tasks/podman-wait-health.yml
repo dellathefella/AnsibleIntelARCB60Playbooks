@@ -1,0 +1,23 @@
+# =============================================================================
+# podman-wait-health.yml
+# Include with:
+#   host_port                  host port the server listens on (/health)
+#   podman_health_retries    OPTIONAL retry count (default 60 => ~5 min)
+# =============================================================================
+---
+- name: Sleep 10s to let container initialize
+  ansible.builtin.command:
+    cmd: "sleep 10"
+  changed_when: false
+  tags: [podman, deploy]
+
+- name: Wait for the server health endpoint to respond
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/health"
+    return_content: true
+    status_code: 200
+  register: health_check
+  retries: "{{ podman_health_retries | default(60) }}"
+  delay: 5
+  until: health_check is succeeded
+  tags: [podman, deploy]

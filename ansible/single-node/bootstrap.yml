@@ -1,0 +1,48 @@
+---
+# =============================================================================
+# bootstrap.yml — SINGLE-NODE ORCHESTRATOR
+#
+# Tracks (all run on the ReBAR-enabled B60 host in [sycl]):
+#   ../shared/install-podman.yml          podman installation (Fedora/Debian/Arch)    [install-podman]
+#   ../shared/install-hf-cli.yml          HuggingFace CLI installation                 [install-hf-cli]
+#   qwen38-27b-sycl-podman.yml            Qwen3.8-27B IQ3_S→Q4_K + MTP (llama.cpp SYCL) [qwen38-27b-sycl-podman]
+#   qwen36-a3b-moe-sycl-podman.yml        Qwen3.6-35B-A3B MoE UD-Q4_K_S (llama.cpp SYCL) [qwen36-a3b-moe-sycl-podman]
+#   summary.yml                           final per-host completion summary            [summary]
+#
+# Run from repo root:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/single-node/bootstrap.yml
+#
+# Run a single track:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/single-node/qwen38-27b-sycl-podman.yml
+#
+# Run only the base setup:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/single-node/bootstrap.yml \
+#     --tags install-podman,install-hf-cli
+#
+# Tags select tracks: --tags qwen38-27b-sycl-podman runs only that track.
+# The two tracks are mutually exclusive at runtime (one GPU): deploying one
+# stops the other's container.
+#
+# Become: plays run rootful (become: true). Feed the sudo password with -K,
+# or set a NOPASSWD rule for podman.
+# =============================================================================
+
+- name: Import shared — Podman
+  import_playbook: ../shared/install-podman.yml
+  tags: install-podman
+
+- name: Import shared — HuggingFace CLI
+  import_playbook: ../shared/install-hf-cli.yml
+  tags: install-hf-cli
+
+- name: Track — Qwen3.8-27B (llama.cpp SYCL, MTP)
+  import_playbook: qwen38-27b-sycl-podman.yml
+  tags: [qwen38-27b-sycl-podman]
+
+- name: Track — Qwen3.6-35B-A3B MoE (llama.cpp SYCL)
+  import_playbook: qwen36-a3b-moe-sycl-podman.yml
+  tags: [qwen36-a3b-moe-sycl-podman]
+
+- name: Final per-host summary
+  import_playbook: summary.yml
+  tags: summary

@@ -1,16 +1,17 @@
+# =============================================================================
+# rebar-gate.yml
+# Resolves the Arc render node, its PCI id, and measures the largest
+# prefetchable BAR (the ReBAR window). ReBAR is MANDATORY — no opt-out:
+# without it the Level-Zero device cannot be created and the Vulkan fallback
+# performs abysmally (~5 t/s small-context cliff on the legacy P53 rig).
+#
+# Include with:  (nothing — reads /sys on the target)
+# Sets facts:
+#   b60_render_node   e.g. /dev/dri/renderD129
+#   b60_pci_id        e.g. 0000:05:00.0
+#   rebar_bytes       largest prefetchable BAR size in bytes
+# =============================================================================
 ---
-- name: Ensure podman is present
-  ansible.builtin.command: podman --version
-  register: podman_check
-  changed_when: false
-  failed_when: podman_check.rc != 0
-
-- name: Ensure curl is present (model download)
-  ansible.builtin.command: curl --version
-  register: curl_check
-  changed_when: false
-  failed_when: curl_check.rc != 0
-
 - name: Detect Intel Arc render node (driver xe, fallback i915)
   ansible.builtin.shell: |
     for r in /sys/class/drm/renderD*; do
@@ -29,10 +30,12 @@
   register: render_detect
   changed_when: false
   failed_when: false
+  tags: [podman, gate]
 
 - name: Set render node fact
   ansible.builtin.set_fact:
     b60_render_node: "{{ render_detect.stdout | trim }}"
+  tags: [podman, gate]
 
 - name: Assert an Intel Arc render node exists
   ansible.builtin.assert:
@@ -42,15 +45,18 @@
     fail_msg: >-
       No Intel Arc render node (driver 'xe' or 'i915') found.
       Is the B60 connected and the 'xe' kernel driver loaded?
+  tags: [podman, gate]
 
 - name: Resolve PCI id of the Arc render node
-  ansible.builtin.command: "readlink -f {{ b60_render_node }}/device"
+  ansible.builtin.command: "readlink -f /sys/class/drm/{{ b60_render_node | basename }}/device"
   register: pci_link
   changed_when: false
+  tags: [podman, gate]
 
 - name: Set PCI id fact
   ansible.builtin.set_fact:
     b60_pci_id: "{{ pci_link.stdout | basename }}"
+  tags: [podman, gate]
 
 - name: Measure largest prefetchable BAR (ReBAR window)
   ansible.builtin.command:
@@ -65,15 +71,17 @@
                 if len(p) < 3:
                     continue
                 start, end, flags = (int(x, 16) for x in p[:3])
-                if (flags & 0x200) and (flags & 0x1000):  # IORESOURCE_MEM | IORESOURCE_PREFETCH
+                if (flags & 0x200) and (flags & 0x2000):  # IORESOURCE_MEM | IORESOURCE_PREFETCH
                     best = max(best, end - start + 1)
         print(best)
   register: rebar_probe
   changed_when: false
+  tags: [podman, gate]
 
 - name: Set ReBAR fact
   ansible.builtin.set_fact:
     rebar_bytes: "{{ rebar_probe.stdout | trim | int }}"
+  tags: [podman, gate]
 
 - name: Assert ReBAR is enabled (mandatory — no opt-out)
   ansible.builtin.assert:
@@ -83,48 +91,6 @@
       Resizable BAR is mandatory on this rig. The largest prefetchable BAR on
       {{ b60_pci_id }} is only {{ rebar_bytes | int // 1048576 }} MiB — without
       ReBAR the Level-Zero device cannot be created and the Vulkan fallback
-      performs abysmally (~5 t/s small-ctx cliff). Enable ReBAR in firmware.
+      performs abysmally. Enable ReBAR in firmware.
     success_msg: "ReBAR window: {{ rebar_bytes | int // 1073741824 }} GiB on {{ b60_pci_id }}"
-
-- name: Probe SYCL / Level-Zero for a GPU device
-  ansible.builtin.command:
-    cmd: >-
-      podman run --rm --device {{ b60_render_node }} --security-opt label=disable
-      --entrypoint /bin/bash {{ llama_image }}
-      -lc 'sycl-ls --ignore-device-selectors 2>/dev/null || true'
-  register: sycl_probe
-  changed_when: false
-  failed_when: false
-  become: true
-
-- name: Assert the SYCL/Level-Zero GPU device is usable
-  ansible.builtin.assert:
-    that:
-      - "'level_zero:gpu' in (sycl_probe.stdout | default(''))"
-    fail_msg: >-
-      No level_zero:gpu device inside the SYCL container on {{ b60_render_node }}
-      even though the BAR looks large enough. Check the xe driver, the compute
-      runtime, and that the full-intel image is pullable.
-    success_msg: "SYCL device: {{ (sycl_probe.stdout_lines | select('search', 'level_zero:gpu') | first) | default('?') }}"
-
-- name: Set backend fact
-  ansible.builtin.set_fact:
-    selected_backend: sycl
-
-- name: Create directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    mode: "0755"
-  loop:
-    - "{{ b60_home }}"
-    - "{{ models_dir }}"
-    - "{{ scripts_dir }}"
-
-- name: Backend summary
-  ansible.builtin.debug:
-    msg:
-      - "render node : {{ b60_render_node }} ({{ b60_pci_id }})"
-      - "rebar       : {{ rebar_bytes | int // 1073741824 }} GiB prefetchable BAR"
-      - "backend     : {{ selected_backend }} (mandatory)"
-      - "image       : {{ llama_image }}"
+  tags: [podman, gate]

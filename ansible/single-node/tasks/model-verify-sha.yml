@@ -1,0 +1,33 @@
+# =============================================================================
+# model-verify-sha.yml
+# Verifies the downloaded model's size + sha256. The sha equals the
+# HuggingFace LFS oid, so a match proves a complete, intact download.
+#
+# Include with:
+#   model            filename inside the models dir
+#   _models_dir      local models root
+#   model_sha256     expected sha256 ("")
+#   model_size       expected byte size (0 = skip the size check)
+# =============================================================================
+---
+- name: Stat the model file
+  ansible.builtin.stat:
+    path: "{{ _models_dir }}/{{ model }}"
+    checksum_algorithm: sha256
+  register: _model_stat
+  tags: [model]
+
+- name: Assert model is present, right size, right checksum
+  ansible.builtin.assert:
+    that:
+      - _model_stat.stat.exists
+      - model_size | int == 0 or _model_stat.stat.size | int == model_size | int
+      - model_sha256 | length == 0 or _model_stat.stat.checksum == model_sha256
+    fail_msg: >-
+      Model check failed for {{ _models_dir }}/{{ model }}
+      (size {{ _model_stat.stat.size | default('missing') }} vs expected {{ model_size }},
+      sha {{ _model_stat.stat.checksum | default('missing') }}).
+      Fix manually: rm {{ _models_dir }}/{{ model }} and re-run the track
+      playbook (the download is resumable).
+    success_msg: "model verified: {{ model }} ({{ _model_stat.stat.size }} bytes, sha ok)"
+  tags: [model]

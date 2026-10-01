@@ -1,0 +1,22 @@
+---
+- name: "Bootstrap — final summary"
+  hosts: aiservers
+  gather_facts: false
+  become: true
+  tags: [summary]
+  tasks:
+    - name: List inference containers
+      ansible.builtin.command:
+        cmd: "podman ps --format '{{ range . }}{{ .Names }}  {{ .Ports }}  {{ .Status }}{{ \"\\n\" }}{{ end }}'"
+      register: summary_containers
+      changed_when: false
+      failed_when: false
+
+    - name: Print completion summary
+      ansible.builtin.debug:
+        msg: |
+          ==== bootstrap complete on {{ inventory_hostname }} ====
+          Running containers:
+          {{ summary_containers.stdout | default('(none)') }}
+          One GPU, one track — start a track with its launch script
+          (~/scripts/<track_stem>-start.sh) or its playbook tag.

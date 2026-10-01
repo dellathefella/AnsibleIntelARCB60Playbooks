@@ -1,0 +1,52 @@
+# =============================================================================
+# hf-download-files.yml
+# Downloads each item in `hf_download_items` from HuggingFace, skipping any
+# whose target file already exists on disk.
+#
+# Include with:
+#   hf_download_items   list of items:
+#                          repo       HF repo id
+#                          file       path to the file inside the repo (hf
+#                                     preserves this layout under dest_dir)
+#                          dest_dir   local dir passed to `hf download --local-dir`
+#   hf_token_lookup     HF token string ("" => public/no-token download)
+# =============================================================================
+---
+- name: "Hf-download: stat target files"
+  ansible.builtin.stat:
+    path: "{{ item.dest_dir }}/{{ item.file | basename }}"
+  loop: "{{ hf_download_items }}"
+  loop_control:
+    label: "{{ item.file | basename }}"
+  register: _hf_target_stat
+  tags: [model]
+
+- name: "Hf-download: fetch missing files (with token)"
+  ansible.builtin.command:
+    cmd: >-
+      hf download {{ item.item.repo }} {{ item.item.file }}
+      --token "{{ hf_token_lookup }}" --local-dir {{ item.item.dest_dir }}
+  loop: "{{ _hf_target_stat.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"
+  when:
+    - not item.stat.exists
+    - hf_token_lookup | length > 0
+  register: _hf_download_with_token
+  changed_when: "'Downloaded' in _hf_download_with_token.stdout or 'Updated' in _hf_download_with_token.stdout"
+  tags: [model]
+
+- name: "Hf-download: fetch missing files (public, no token)"
+  ansible.builtin.command:
+    cmd: >-
+      hf download {{ item.item.repo }} {{ item.item.file }}
+      --local-dir {{ item.item.dest_dir }}
+  loop: "{{ _hf_target_stat.results }}"
+  loop_control:
+    label: "{{ item.item.file }}"
+  when:
+    - not item.stat.exists
+    - hf_token_lookup | length == 0
+  register: _hf_download_public
+  changed_when: "'Downloaded' in _hf_download_public.stdout or 'Updated' in _hf_download_public.stdout"
+  tags: [model]

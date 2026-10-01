@@ -1,0 +1,12 @@
+# =============================================================================
+# podman-remove-container.yml
+# Include with:
+#   docker_container_name   name of the container to remove, if present
+# =============================================================================
+---
+- name: Remove any existing container with the same name
+  ansible.builtin.command:
+    cmd: "podman rm -f {{ docker_container_name }}"
+  ignore_errors: true
+  changed_when: false
+  tags: [podman, deploy]

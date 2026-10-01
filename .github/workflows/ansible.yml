@@ -1,0 +1,49 @@
+name: ansible
+
+on:
+  push:
+    paths:
+      - "ansible/**"
+      - ".github/workflows/ansible.yml"
+  pull_request:
+    paths:
+      - "ansible/**"
+      - ".github/workflows/ansible.yml"
+  workflow_dispatch:
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install ansible-core
+        run: pip install ansible-core
+
+      - name: Syntax-check single-node playbooks
+        run: |
+          for pb in ansible/single-node/*.yml ansible/shared/*.yml; do
+            echo "== $pb =="
+            ansible-playbook --syntax-check \
+              -i ansible/single-node/inventory/hosts "$pb"
+          done
+
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install ansible-lint
+        run: pip install "ansible-lint"
+
+      - name: ansible-lint (advisory)
+        run: ansible-lint ansible/

@@ -1,0 +1,30 @@
+# =============================================================================
+# sycl-probe.yml
+# Runs sycl-ls inside the full-intel image and fails unless a level_zero:gpu
+# device shows up — that is what the server will serve on. Pulls the image on
+# first use (rootful store).
+#
+# Include with:
+#   docker_image      the full-intel image to probe
+# =============================================================================
+---
+- name: Probe SYCL / Level-Zero for a GPU device
+  ansible.builtin.command:
+    cmd: >-
+      podman run --rm --device /dev/dri --security-opt label=disable
+      --entrypoint /bin/bash {{ docker_image }}
+      -lc 'sycl-ls --ignore-device-selectors 2>/dev/null || true'
+  register: sycl_probe
+  changed_when: false
+  failed_when: false
+  tags: [podman, gate]
+
+- name: Assert the SYCL/Level-Zero GPU device is usable
+  ansible.builtin.assert:
+    that:
+      - "'level_zero:gpu' in (sycl_probe.stdout | default(''))"
+    fail_msg: >-
+      No level_zero:gpu device inside the SYCL container. The xe driver,
+      Resizable BAR, or the full-intel image is broken on this host.
+    success_msg: "SYCL device: {{ sycl_probe.stdout_lines | select('search', 'level_zero:gpu') | first }}"
+  tags: [podman, gate]

@@ -1,0 +1,201 @@
+---
+# =============================================================================
+# qwen38-27b-sycl-podman.yml
+# Qwen3.8-27B (IQ3_S→Q4_K tuned GGUF, MTP draft head) — llama.cpp via Podman,
+# SYCL/Level-Zero backend (full-intel image).
+#
+#   image           ghcr.io/ggml-org/llama.cpp:full-intel (PULLED, never built)
+#   model           Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf
+#                   (Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF, ~14.3 GB,
+#                   0 I-Quant tensors -> XMX/DPAS stays on the GPU)
+#   backend         SYCL/Level-Zero — REQUIRES Resizable BAR. The rebar-gate
+#                   task fails the play on rigs without a large prefetchable
+#                   BAR; there is no Vulkan fallback (abysmal without ReBAR).
+#   API             OpenAI-compatible /v1/* + /health on port 8183
+#   launch script   ~/scripts/qwen38-27b-sycl-start.sh
+#
+# One GPU, one track: this track stops the MoE track's container
+# (qwen36-a3b-moe) before claiming the device, and vice versa.
+#
+# Measured on halo1 (32 GiB ReBAR, 2026-10-01): ~36-46 t/s decode,
+# ~614-660 t/s long-prefill at 128k. See benchmarks/RESULTS.md.
+# =============================================================================
+
+- name: "llama.cpp SYCL — Qwen3.8-27B (IQ3_S→Q4_K + MTP) on Arc B60"
+  hosts: sycl
+  gather_facts: true
+  become: true
+  tags: [qwen38-27b-sycl-podman]
+  vars:
+    # =====================================================================
+    # Qwen3.8-27B SYCL track vars — self-contained, no group_vars
+    # =====================================================================
+    track_stem: "qwen38-27b-sycl"
+
+    docker_image: "ghcr.io/ggml-org/llama.cpp:full-intel"
+    docker_container_name: "qwen38-27b-sycl"
+    sibling_container: "qwen36-a3b-moe"
+
+    hf_repo: "Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF"
+    model: "Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf"
+    model_sha256: "2170ff045d36dfa1ac5cad5a9f4f1945f5a784a93466a0449dbb6ed8ec1eacce"
+    model_size: 15359440960
+
+    ctx: 200000
+    host_port: 8183
+
+    n_gpu_layers: 99
+    flash_attn: "on"
+    batch_size: 1024
+    ubatch_size: 1024
+    threads: 4
+    threads_batch: 6
+    cache_type_k: q4_0
+    cache_type_v: q4_0
+    parallel_slots: 1
+
+    # The tuned GGUF keeps the Layer-64 NextN draft head (Q6_K), so MTP
+    # speculation works with no separate draft model. draft-n-max 5 is the
+    # measured sweet spot (98-100% acceptance; 8 OOMs at 200k ctx).
+    enable_speculative: true
+    spec_type: "ngram-mod,draft-mtp"
+    spec_ngram_mod_n_match: 24
+    spec_ngram_mod_n_min: 1
+    spec_ngram_mod_n_max: 5
+    spec_draft_n_max: 5
+    spec_draft_p_min: 0.5
+
+    # Directories — plays run with become: true, so ansible_env.HOME would be
+    # /root. Use ansible_user (the original login user) for the home dir.
+    _user_home: "/home/{{ ansible_user }}"
+    _models_dir: "{{ _user_home }}/.local/share/b60-llama/models"
+    _container_models_dir: "/models"
+
+    # Model download settings — token read on the controller ("" => public)
+    hf_token_lookup: "{{ lookup('file', playbook_dir + '/../secrets/hf_token.txt', errors='ignore') | default('', true) | trim }}"
+    hf_download_items:
+      - { repo: "{{ hf_repo }}", file: "{{ model }}", dest_dir: "{{ _models_dir }}" }
+
+    # llama-server arguments — shared between the deployment and the debug hint
+    _llama_args: >-
+      -m {{ _container_models_dir }}/{{ model }}
+      -ngl {{ n_gpu_layers }} -fa {{ flash_attn }}
+      -c {{ ctx }} -b {{ batch_size }} -ub {{ ubatch_size }}
+      -t {{ threads }} -tb {{ threads_batch }}
+      -ctk {{ cache_type_k }} -ctv {{ cache_type_v }}
+      {%- if enable_speculative | bool %}
+        --spec-type {{ spec_type }}
+        --spec-ngram-mod-n-match {{ spec_ngram_mod_n_match }}
+        --spec-ngram-mod-n-min {{ spec_ngram_mod_n_min }}
+        --spec-ngram-mod-n-max {{ spec_ngram_mod_n_max }}
+        --spec-draft-n-max {{ spec_draft_n_max }}
+        --spec-draft-p-min {{ spec_draft_p_min }}
+      {%- endif %}
+      {%- if parallel_slots | int > 0 %} --parallel {{ parallel_slots }} {%- endif %}
+      --host 0.0.0.0 --port {{ host_port }}
+
+    # Everything after `podman run -d --name`, shared between the deployment
+    # and the manual debug hint — keeps them from drifting.
+    _podman_common_args: >-
+      --rm
+      --device /dev/dri
+      --security-opt label=disable
+      -v {{ _models_dir }}:{{ _container_models_dir }}:ro
+      -e UR_LOADER_USE_LEVEL_ZERO_V2=0
+      -e ONEAPI_DEVICE_SELECTOR=level_zero:0
+      -e ZE_AFFINITY_MASK=0
+      -p {{ host_port }}:{{ host_port }}
+      --entrypoint /app/llama-server
+      {{ docker_image }}
+      {{ _llama_args }}
+
+    # 200k ctx + 14 GB cold SYCL load takes minutes; allow ~10 min of retries.
+    podman_health_retries: 120
+
+    # opencode config (rendered to the controller)
+    opencode_provider_id: "qwen-arc"
+    opencode_model_id: "qwen3.8-27b"
+    opencode_provider_name: "Qwen 3.8 27B (Arc B60)"
+    opencode_model_name: "Qwen 3.8 27B (IQ3_S→Q4_K + MTP)"
+    opencode_context_limit: 200000
+    opencode_output_limit: 8192
+
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. ReBAR gate (mandatory) + SYCL probe
+    # -----------------------------------------------------------------------
+    - name: Resolve render node, PCI id, ReBAR window (mandatory)
+      ansible.builtin.include_tasks: tasks/rebar-gate.yml
+
+    - name: Probe SYCL/Level-Zero device (pulls the image if missing)
+      ansible.builtin.include_tasks: tasks/sycl-probe.yml
+
+    # -----------------------------------------------------------------------
+    # 2. Model (download + verify)
+    # -----------------------------------------------------------------------
+    - name: Set up models directory
+      ansible.builtin.include_tasks: tasks/podman-models-dir.yml
+
+    - name: Download the tuned GGUF if not present
+      ansible.builtin.include_tasks: tasks/hf-download-files.yml
+
+    - name: Verify model size + sha256
+      ansible.builtin.include_tasks: tasks/model-verify-sha.yml
+
+    # -----------------------------------------------------------------------
+    # 3. Create and run the Podman container
+    # -----------------------------------------------------------------------
+    - name: Stop the sibling track (one GPU, one track)
+      ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
+
+    - name: Remove any existing container
+      ansible.builtin.include_tasks: tasks/podman-remove-container.yml
+
+    - name: Run llama.cpp container (Podman, SYCL)
+      ansible.builtin.command:
+        cmd: "podman run -d --name {{ docker_container_name }} {{ _podman_common_args }}"
+      register: podman_run_result
+      changed_when: "'Started' in podman_run_result.stdout or podman_run_result.rc == 0"
+      tags: [podman, deploy]
+
+    - name: Check container status
+      ansible.builtin.include_tasks: tasks/podman-check-running.yml
+
+    - name: Print container failure info
+      ansible.builtin.debug:
+        msg: |
+          Container {{ docker_container_name }} is NOT running or was removed (has --rm flag).
+
+          To debug, run manually:
+            podman run -it {{ _podman_common_args }}
+
+          Check GPU access: ls -la /dev/dri/
+          Check ReBAR window: cat /sys/bus/pci/devices/{{ b60_pci_id }}/resource
+      when: container_check.stdout | default('') | length == 0
+      tags: [podman, deploy]
+
+    - name: Wait for the server to come up
+      ansible.builtin.include_tasks: tasks/podman-wait-health.yml
+
+    # -----------------------------------------------------------------------
+    # 4. Write launch script + opencode config
+    # -----------------------------------------------------------------------
+    - name: Render launch script + opencode config
+      ansible.builtin.include_tasks: tasks/podman-render-launch-artifacts.yml
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ==== llama.cpp (Podman, SYCL) deployed on {{ inventory_hostname }} ====
+          Image: {{ docker_image }} (pulled)
+          Container: {{ docker_container_name }}
+          API endpoint: http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/v1
+          Model: {{ _models_dir }}/{{ model }}
+          Context: {{ ctx }} (MTP + ngram-mod speculation, draft-n-max {{ spec_draft_n_max }})
+          Launch script: ~/scripts/{{ track_stem }}-start.sh
+
+          === Container log commands ===
+          View logs:  podman logs -f {{ docker_container_name }}
+          Tail last 100 lines:  podman logs --tail 100 {{ docker_container_name }}
+          View since startup:  podman logs --since 24h {{ docker_container_name }}
+      tags: [podman, deploy]

@@ -1,0 +1,66 @@
+---
+# =============================================================================
+# install-podman.yml
+# Cross-distro podman installation for Fedora, Debian/Ubuntu, and Arch Linux.
+#
+# Shared playbook: imported by bootstrap.yml.
+# Usage:
+#   ansible-playbook -i ansible/single-node/inventory/hosts ansible/shared/install-podman.yml
+# =============================================================================
+
+- name: "Install-podman — detect OS and install podman"
+  hosts: aiservers
+  gather_facts: true
+  become: true
+  tags: [install-podman]
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. Fedora (dnf)
+    # -----------------------------------------------------------------------
+    - name: Install podman on Fedora
+      ansible.builtin.dnf:
+        name: podman
+        state: present
+      when: ansible_os_family | lower == "fedora"
+      tags: [install-podman, fedora]
+
+    # -----------------------------------------------------------------------
+    # 2. Debian/Ubuntu (apt)
+    # -----------------------------------------------------------------------
+    - name: Install podman on Debian/Ubuntu
+      ansible.builtin.apt:
+        name:
+          - podman
+        state: present
+        update_cache: true
+      when:
+        - (ansible_facts['os_family'] | lower == "debian") or (ansible_facts['os_family'] | lower == "ubuntu")
+      tags: [install-podman, debian, ubuntu]
+
+    # -----------------------------------------------------------------------
+    # 3. Arch Linux (community.general.pacman)
+    # -----------------------------------------------------------------------
+    - name: Install podman on Arch Linux
+      community.general.pacman:
+        name:
+          - podman
+          - podman-compose
+        state: present
+      when: ansible_os_family | lower == "archlinux"
+      tags: [install-podman, arch]
+
+    # -----------------------------------------------------------------------
+    # 4. Verify installation
+    # -----------------------------------------------------------------------
+    - name: Verify podman is installed
+      ansible.builtin.command:
+        cmd: podman --version
+      register: podman_version
+      changed_when: false
+      failed_when: false
+      tags: [install-podman]
+
+    - name: Print podman version
+      ansible.builtin.debug:
+        msg: "podman installed: {{ podman_version.stdout | default('NOT INSTALLED') }}"
+      tags: [install-podman]

@@ -1,4 +1,0 @@
----
-# Internal defaults. All user-facing knobs live in group_vars/all.yml.
-# These are only fallbacks so the role is self-contained if group_vars is absent.
-b60_llama_ready_marker: "{{ b60_home | default(ansible_env.HOME ~ '/.local/share/b60-llama') }}/.provisioned"

@@ -1,0 +1,20 @@
+# =============================================================================
+# podman-check-running.yml
+# Include right after the `podman run` task. Include with:
+#   docker_container_name   name of the container just started
+#   podman_run_result       the registered result of the `podman run` task
+# =============================================================================
+---
+- name: Print container start result
+  ansible.builtin.debug:
+    msg: "Container started: {{ podman_run_result.stdout | default('unknown') }}"
+  when: podman_run_result is defined
+  tags: [podman, deploy]
+
+- name: Check if container is running
+  ansible.builtin.command:
+    cmd: "podman ps --filter name={{ docker_container_name }} --format json"
+  register: container_check
+  changed_when: false
+  failed_when: false
+  tags: [podman, deploy]

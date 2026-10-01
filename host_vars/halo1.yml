@@ -1,5 +1,0 @@
----
-# halo1: B60 over TB4 with ReBAR. The API is published on all interfaces
-# (api_bind: 0.0.0.0 from group_vars); clients — including the opencode config
-# rendered on the controller — reach it at this LAN address.
-api_host: "10.0.1.67"
