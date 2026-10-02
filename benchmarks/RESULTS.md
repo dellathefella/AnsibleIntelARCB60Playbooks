@@ -549,3 +549,41 @@ frees the VRAM for the larger ubatch.
 - `benchmarks/prefill_probe.py` — reads the server's own `prompt eval time` (accurate prefill)
 - `benchmarks/single_gpu_ab.py` — warmup-saturated single-GPU A/B
 - `benchmarks/ab_bench.py` — interleaved two-endpoint A/B with sign test
+
+## Qwen3.8-Flash-Next on Arc B60 (qwen4exp, 179.55B MoE) — hybrid feasibility (2026-10-02)
+
+**Model:** ISTA-DASLab GSQ-RCO IQ3_S (83.6 GB) + ggml-org `mtp-Q4_0` draft (2.2 GB)
+**Engine:** llama.cpp master `4ebdf2c` (qwen4exp + MTP merged 2026-10-01), SYCL,
+fork `dellathefella/llama.cpp` branch `arc-flash-engine`.
+**Rig constraint:** B60 sits in a **Thunderbolt 3 dock** (JHL7440, x4 Gen3):
+H2D/D2H measured **2.9/3.2 GB/s** (multi-stream, pinned, IOMMU/ASPM off —
+no headroom left). Expert streaming over the link is dead; experts live in
+RAM and compute on CPU (`--cpu-moe`), PLE n-gram table stays lazy-mmap'd
+(halogen-style rainbow-table paging; `TENSOR_READ_LAZY`, llama-model.cpp).
+
+### Measured (clocks locked, 1x B60 + 125 GB RAM)
+| Config | prefill 16k | decode (MTP on) |
+|---|---|---|
+| IQ3_S, ub2048, mmap | 29 t/s | — |
+| IQ3_S, ub8192, `--load-mode none` | **242.6 t/s** | 23.5 t/s |
+| IQ3_S + expert fadvise prefetcher | 225 t/s | 25.2 t/s |
+| IQ4_NL (96 GiB), same flags | 199 t/s | 22.6 t/s |
+| Q8_0 (152 GiB) | host thrash — exceeds RAM+cache; DO NOT run `load-mode none` | — |
+
+Key lessons:
+- `--load-mode none` + ub8192 = **8.4x prefill** over default mmap+ub2048
+  (page-fault serialization on CPU-resident experts was the bottleneck).
+- IQ3_S beats IQ4_NL here: CPU expert GEMM is byte-bound; +21% bytes of
+  IQ4_NL outweighs its kernel path. "Q4 natively accelerated" does not hold
+  on the ggml-cpu MoE path.
+- Expert prefetcher (`llama-expert-prefetch.h`, fadvise WILLNEED in layer
+  order, `LLAMA_EXPERT_PREFETCH_PACE_MS`) verified via strace (290
+  fadvise64 calls); neutral on cache-resident IQ3_S; untested under pressure.
+- Q8_0 + `--load-mode none` on a 125 GB host = swap thrash, host unresponsive
+  ~15 min. Q8 needs mmap + paced prefetch, never load-mode none.
+
+### Ceiling math (why this is a stepping stone, not the end)
+CPU expert GEMM ~2.8-16 TFLOPS eff bounds prefill; Strata-style VRAM expert
+tiering + doorbell CPU/GPU overlap (MIT, `dellathefella/Strata` branch
+`sycl-backend`, plan in `docs/SYCL_PORT.md`) targets 400-600 t/s prefill and
+>27 t/s decode on this exact link.
