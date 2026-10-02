@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
 """Single-GPU A/B decode benchmark with sustained-clock warmup.
 
-On a single Arc B60 only one track runs at a time, and the GPU clock ramps for
-the first ~1-2 min of load (the +/-30% intra-session noise in RESULTS.md).
-Client BMG exposes no clock lock (no xpu-smi / gt sysfs), so the only way to
-compare two kernels fairly is to drive the GPU to steady-state clocks with a
-sustained load BEFORE each measurement, and to keep it warm across the flip.
+MEASUREMENT RIG (learned 2026-10-02, halo1):
+  * Lock GPU clocks first: tasks/gpu-clock-lock.yml pins min_freq=max_freq
+    (2400 MHz). Without it, prefill loses ~9% and decode sags between bursts.
+  * Benchmark with speculative decoding DISABLED. With spec on, each rep's
+    random-UUID prompt produces different content -> different MTP/ngram
+    acceptance -> effective t/s swings 32-47 (MAD ~5). That variance, NOT
+    clocks, was the old "+/-30% intra-session noise". Spec off + clocks
+    locked gives MAD ~0.02 t/s (0.1%), enough to resolve 1-2% kernel deltas.
+  * Raw spec-off decode (~21.5 t/s) x spec multiplier (1.5-2.2x, content
+    dependent) = the effective production number.
 
-Protocol (run per endpoint, back-to-back so both sit in the same thermal window):
+Protocol (run per endpoint, back-to-back):
   1. warm: hammer decode continuously for --warm-seconds (default 180)
   2. measure: --reps timed K-token decodes, report median + MAD
 
-Run the tuned endpoint first, then redeploy stock and run it immediately while
-the GPU is still warm, and compare medians.
-
 Usage:
-  python3 single_gpu_ab.py --endpoint http://10.0.1.67:8186 --label tuned
-  python3 single_gpu_ab.py --endpoint http://10.0.1.67:8183 --label stock
+  python3 single_gpu_ab.py --endpoint http://10.0.1.67:8184 --label variant-a
 """
 import argparse, json, statistics, sys, time, urllib.request, uuid
 

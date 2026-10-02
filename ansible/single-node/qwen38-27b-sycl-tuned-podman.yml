@@ -193,6 +193,9 @@
     - name: Resolve render node, PCI id, ReBAR window (mandatory)
       ansible.builtin.include_tasks: tasks/rebar-gate.yml
 
+    - name: Lock GPU clocks to max (removes clock sag; +9% prefill)
+      ansible.builtin.include_tasks: tasks/gpu-clock-lock.yml
+
     - name: Probe SYCL/Level-Zero device inside the tuned image
       ansible.builtin.include_tasks: tasks/sycl-probe.yml
 

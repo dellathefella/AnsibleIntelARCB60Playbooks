@@ -1,0 +1,56 @@
+# =============================================================================
+# gpu-clock-lock.yml
+# Locks the Arc B60 (BMG-G21, PCI 8086:e211) render GT min_freq to max_freq
+# via the xe driver's freq0 sysfs, as a systemd oneshot enabled at boot.
+#
+# Why: under bursty LLM inference the GPU clock sags between requests;
+# pinning min=max removes the sag and the run-to-run variance it causes.
+# Measured on halo1 (2026-10-02): +9% prefill (751/679/554 vs 691/626/506
+# t/s at 32k/64k/128k) and decode MAD drops from ~5 t/s to ~0.02 t/s.
+# Idle power is unaffected — min_freq does not block gt-c6 sleep.
+#
+# Include with:  (nothing — auto-detects the card by PCI vendor:device)
+# =============================================================================
+---
+- name: Install B60 clock-lock script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/b60-clock-lock.sh
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Lock Intel Arc B60 (BMG-G21, 8086:e211) render GT min_freq to max_freq.
+      set -u
+      for dev in /sys/bus/pci/devices/*; do
+        [ "$(cat "$dev/vendor" 2>/dev/null):$(cat "$dev/device" 2>/dev/null)" = "0x8086:0xe211" ] || continue
+        for f in "$dev"/drm/card*/device/tile*/gt*/freq0; do
+          [ -e "$f/min_freq" ] || continue
+          max=$(cat "$f/max_freq")
+          echo "$max" > "$f/min_freq" 2>/dev/null \
+            && echo "locked $f min_freq=$max" \
+            || echo "skip $f (max=$max)"
+        done
+      done
+
+- name: Install B60 clock-lock systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/b60-clock-lock.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Lock Intel Arc B60 GPU clocks to max
+      After=sysinit.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/b60-clock-lock.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start B60 clock-lock service
+  ansible.builtin.systemd_service:
+    name: b60-clock-lock
+    enabled: true
+    state: started
+    daemon_reload: true
