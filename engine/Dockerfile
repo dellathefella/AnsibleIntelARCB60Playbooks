@@ -19,8 +19,10 @@
 # =============================================================================
 
 ARG ONEAPI_VERSION=2026.1.1-devel-ubuntu24.04
-ARG UPSTREAM_REPO=https://github.com/ggml-org/llama.cpp.git
-ARG UPSTREAM_SHA=4ebdf2c
+# Builds from the dellathefella fork; arc-flash-engine branch tracks upstream
+# master (qwen4exp capable). Engine changes land on this branch.
+ARG UPSTREAM_REPO=https://github.com/dellathefella/llama.cpp.git
+ARG UPSTREAM_SHA=arc-flash-engine
 ARG GGML_SYCL_DEVICE_ARCH=
 
 ## Build Image
