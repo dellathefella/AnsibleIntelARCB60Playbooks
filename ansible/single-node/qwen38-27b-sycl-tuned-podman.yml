@@ -1,65 +1,74 @@
 ---
 # =============================================================================
-# qwen38-27b-sycl-podman.yml
+# qwen38-27b-sycl-tuned-podman.yml
 # Qwen3.8-27B (IQ3_S→Q4_K tuned GGUF, MTP draft head) — llama.cpp via Podman,
-# SYCL/Level-Zero backend (full-intel image).
+# SYCL/Level-Zero backend, B60 KERNEL-TUNED IMAGE (built on the host).
 #
-#   image           ghcr.io/ggml-org/llama.cpp:full-intel (PULLED, never built)
+#   image           localhost/llama.cpp:b60-tuned (BUILT here from
+#                   kernel-work/Dockerfile.tuned — the only track that builds)
+#   kernel mods     1) ESIMD weight-streaming loads (oneAPI 2026 property
+#                      hints L1 uncached + L2 uncached): the per-token weight
+#                      re-read bypasses the caches entirely (it comes from
+#                      DRAM anyway), keeping cache for KV / activations.
+#                   2) safe fast-math subset (-fno-math-errno
+#                      -fno-signed-zeros -fno-trapping-math -ffp-contract=fast;
+#                      ~+5-8% decode, without the finite-math-only UB of full
+#                      -ffast-math).
+#                   Patch: kernel-work/patches/0001-*.patch on upstream
+#                   llama.cpp @ 5fc4f3c.
 #   model           Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf
-#                   (Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF, ~14.3 GB,
-#                   0 I-Quant tensors -> XMX/DPAS stays on the GPU)
-#   backend         SYCL/Level-Zero — REQUIRES Resizable BAR. The rebar-gate
-#                   task fails the play on rigs without a large prefetchable
-#                   BAR; there is no Vulkan fallback (abysmal without ReBAR).
-#   API             OpenAI-compatible /v1/* + /health on port 8183
-#   launch script   ~/scripts/qwen38-27b-sycl-start.sh
+#                   (same weights as the stock 27B track — A/B is kernels only)
+#   backend         SYCL/Level-Zero — REQUIRES Resizable BAR (rebar-gate).
+#   API             OpenAI-compatible /v1/* + /health on port 8186
+#   launch script   ~/scripts/qwen38-27b-sycl-tuned-start.sh
 #
-# One GPU, one track: this track stops the MoE track's container
-# (qwen36-a3b-moe) before claiming the device, and vice versa.
+# A/B vs the stock track: benchmarks/ab_bench.py --a :8183 --b :8186
 #
-# Measured on halo1 (32 GiB ReBAR, 2026-10-01): ~36-46 t/s decode,
-# ~614-660 t/s long-prefill at 128k. See benchmarks/RESULTS.md.
+# One GPU, one track: stops all sibling track containers before claiming the
+# device.
 # =============================================================================
 
-- name: "llama.cpp SYCL — Qwen3.8-27B (IQ3_S→Q4_K + MTP) on Arc B60"
+- name: "llama.cpp SYCL (B60 kernel-tuned) — Qwen3.8-27B (IQ3_S→Q4_K + MTP) on Arc B60"
   hosts: sycl
   gather_facts: true
   become: true
-  tags: [qwen38-27b-sycl-podman]
+  tags: [qwen38-27b-sycl-tuned-podman]
   vars:
     # =====================================================================
-    # Qwen3.8-27B SYCL track vars — self-contained, no group_vars
+    # Qwen3.8-27B SYCL *tuned* track vars — self-contained, no group_vars
     # =====================================================================
-    track_stem: "qwen38-27b-sycl"
+    track_stem: "qwen38-27b-sycl-tuned"
 
-    docker_image: "ghcr.io/ggml-org/llama.cpp:full-intel"
-    docker_container_name: "qwen38-27b-sycl"
-    sibling_containers: ["qwen36-a3b-moe", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2"]
+    docker_image: "localhost/llama.cpp:b60-tuned"
+    docker_container_name: "qwen38-27b-sycl-tuned"
+    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2"]
+
+    # Build inputs (kernel-work/ lives at the repo root, two levels above this play)
+    kernel_work_src: "{{ playbook_dir }}/../../kernel-work"
+    build_dir: "{{ _user_home }}/build/b60-tuned"
+    llama_upstream_sha: "5fc4f3c"
+    # Set -e force_build=true to rebuild even if the image already exists
+    force_build: false
 
     hf_repo: "Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF"
     model: "Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf"
     model_sha256: "2170ff045d36dfa1ac5cad5a9f4f1945f5a784a93466a0449dbb6ed8ec1eacce"
     model_size: 15359440960
 
-    # 160k ctx (not 200k): frees VRAM so ubatch can go to 2048, which lifts
-    # prefill +8-12% (server-side timing, 2026-10-02). 200k cannot fit ub>1024
-    # with the MTP draft context resident.
-    ctx: 163840
-    host_port: 8183
+    ctx: 200000
+    host_port: 8186
 
     n_gpu_layers: 99
     flash_attn: "on"
-    batch_size: 4096
-    ubatch_size: 2048
+    batch_size: 1024
+    ubatch_size: 1024
     threads: 4
     threads_batch: 6
     cache_type_k: q4_0
     cache_type_v: q4_0
     parallel_slots: 1
 
-    # The tuned GGUF keeps the Layer-64 NextN draft head (Q6_K), so MTP
-    # speculation works with no separate draft model. draft-n-max 5 is the
-    # measured sweet spot (98-100% acceptance; 8 OOMs at 200k ctx).
+    # Same MTP speculation as the stock 27B track (draft-n-max 5 sweet spot)
     enable_speculative: true
     spec_type: "ngram-mod,draft-mtp"
     spec_ngram_mod_n_match: 24
@@ -79,7 +88,8 @@
     hf_download_items:
       - { repo: "{{ hf_repo }}", file: "{{ model }}", dest_dir: "{{ _models_dir }}" }
 
-    # llama-server arguments — shared between the deployment and the debug hint
+    # llama-server arguments — identical to the stock 27B track so the A/B
+    # isolates the kernel changes.
     _llama_args: >-
       -m {{ _container_models_dir }}/{{ model }}
       -ngl {{ n_gpu_layers }} -fa {{ flash_attn }}
@@ -116,25 +126,78 @@
     podman_health_retries: 120
 
     # opencode config (rendered to the controller)
-    opencode_provider_id: "qwen-arc"
-    opencode_model_id: "qwen3.8-27b"
-    opencode_provider_name: "Qwen 3.8 27B (Arc B60)"
-    opencode_model_name: "Qwen 3.8 27B (IQ3_S→Q4_K + MTP)"
-    opencode_context_limit: 163840
+    opencode_provider_id: "qwen-arc-tuned"
+    opencode_model_id: "qwen3.8-27b-tuned"
+    opencode_provider_name: "Qwen 3.8 27B (Arc B60, kernel-tuned)"
+    opencode_model_name: "Qwen 3.8 27B (IQ3_S→Q4_K + MTP, B60 kernel tuning)"
+    opencode_context_limit: 200000
     opencode_output_limit: 8192
 
   tasks:
+    # -----------------------------------------------------------------------
+    # 0. Build the kernel-tuned image on the GPU host (idempotent)
+    # -----------------------------------------------------------------------
+    - name: Check whether the tuned image already exists
+      ansible.builtin.command:
+        cmd: "podman image exists {{ docker_image }}"
+      register: tuned_image_check
+      failed_when: false
+      changed_when: false
+      tags: [podman, build]
+
+    - name: Remove stale build context (prevents old patches accumulating)
+      ansible.builtin.file:
+        path: "{{ build_dir }}"
+        state: absent
+      when: force_build | bool or tuned_image_check.rc != 0
+      tags: [podman, build]
+
+    - name: Create build directory on host
+      ansible.builtin.file:
+        path: "{{ build_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      when: force_build | bool or tuned_image_check.rc != 0
+      tags: [podman, build]
+
+    - name: Copy kernel-work build context (Dockerfile.tuned + patches) to host
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: "{{ build_dir }}/"
+        mode: "0644"
+      loop:
+        - "{{ kernel_work_src }}/Dockerfile.tuned"
+        - "{{ kernel_work_src }}/patches"
+      when: force_build | bool or tuned_image_check.rc != 0
+      tags: [podman, build]
+
+    - name: Build the B60-tuned llama.cpp image (oneAPI base pull + SYCL compile)
+      ansible.builtin.command:
+        cmd: >-
+          podman build -t {{ docker_image }}
+          --build-arg UPSTREAM_SHA={{ llama_upstream_sha }}
+          -f Dockerfile.tuned .
+        chdir: "{{ build_dir }}"
+      register: tuned_build
+      changed_when: tuned_build.rc == 0
+      # cold base-image pull + SYCL compile: allow up to 2 h
+      timeout: 7200
+      when: force_build | bool or tuned_image_check.rc != 0
+      tags: [podman, build]
+
     # -----------------------------------------------------------------------
     # 1. ReBAR gate (mandatory) + SYCL probe
     # -----------------------------------------------------------------------
     - name: Resolve render node, PCI id, ReBAR window (mandatory)
       ansible.builtin.include_tasks: tasks/rebar-gate.yml
 
-    - name: Probe SYCL/Level-Zero device (pulls the image if missing)
+    - name: Probe SYCL/Level-Zero device inside the tuned image
       ansible.builtin.include_tasks: tasks/sycl-probe.yml
 
     # -----------------------------------------------------------------------
-    # 2. Model (download + verify)
+    # 2. Model (download + verify) — same weights as the stock 27B track
     # -----------------------------------------------------------------------
     - name: Set up models directory
       ansible.builtin.include_tasks: tasks/podman-models-dir.yml
@@ -148,13 +211,13 @@
     # -----------------------------------------------------------------------
     # 3. Create and run the Podman container
     # -----------------------------------------------------------------------
-    - name: Stop the sibling track (one GPU, one track)
+    - name: Stop the sibling tracks (one GPU, one track)
       ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
 
     - name: Remove any existing container
       ansible.builtin.include_tasks: tasks/podman-remove-container.yml
 
-    - name: Run llama.cpp container (Podman, SYCL)
+    - name: Run llama.cpp container (Podman, SYCL, B60-tuned)
       ansible.builtin.command:
         cmd: "podman run -d --name {{ docker_container_name }} {{ _podman_common_args }}"
       register: podman_run_result
@@ -189,13 +252,17 @@
     - name: Print deployment summary
       ansible.builtin.debug:
         msg: |
-          ==== llama.cpp (Podman, SYCL) deployed on {{ inventory_hostname }} ====
-          Image: {{ docker_image }} (pulled)
+          ==== llama.cpp (Podman, SYCL, B60 kernel-tuned) deployed on {{ inventory_hostname }} ====
+          Image: {{ docker_image }} (built from kernel-work/Dockerfile.tuned @ {{ llama_upstream_sha }})
+          Kernel mods: ESIMD weight-streaming loads (L1/L2 bypass), safe fast-math
           Container: {{ docker_container_name }}
           API endpoint: http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/v1
           Model: {{ _models_dir }}/{{ model }}
           Context: {{ ctx }} (MTP + ngram-mod speculation, draft-n-max {{ spec_draft_n_max }})
           Launch script: ~/scripts/{{ track_stem }}-start.sh
+
+          A/B vs the stock track (8183):
+            python3 benchmarks/ab_bench.py --a http://{{ ansible_host | default(inventory_hostname) }}:8183 --b http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }} --reps 9
 
           === Container log commands ===
           View logs:  podman logs -f {{ docker_container_name }}

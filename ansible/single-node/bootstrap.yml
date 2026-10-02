@@ -9,6 +9,7 @@
 #   qwen36-a3b-moe-sycl-podman.yml        Qwen3.6-35B-A3B MoE UD-Q4_K_S (llama.cpp SYCL) [qwen36-a3b-moe-sycl-podman]
 #   qwen38-27b-vllm-xpu-podman.yml        Qwen3.8-27B AWQ INT4 (vLLM XPU)               [qwen38-27b-vllm-xpu-podman]
 #   qwen36-a3b-escha-w2-sycl-podman.yml   Qwen3.6-35B-A3B Escha W2 IQ2_XXS (llama.cpp SYCL) [qwen36-a3b-escha-w2-sycl-podman]
+#   qwen38-27b-sycl-tuned-podman.yml      Qwen3.8-27B, B60 kernel-tuned build (llama.cpp SYCL) [qwen38-27b-sycl-tuned-podman]
 #   summary.yml                           final per-host completion summary            [summary]
 #
 # Run from repo root:
@@ -52,6 +53,10 @@
 - name: Track — Qwen3.6-35B-A3B Escha W2 (llama.cpp SYCL)
   import_playbook: qwen36-a3b-escha-w2-sycl-podman.yml
   tags: [qwen36-a3b-escha-w2-sycl-podman]
+
+- name: Track — Qwen3.8-27B B60 kernel-tuned (llama.cpp SYCL, built image)
+  import_playbook: qwen38-27b-sycl-tuned-podman.yml
+  tags: [qwen38-27b-sycl-tuned-podman]
 
 - name: Final per-host summary
   import_playbook: summary.yml

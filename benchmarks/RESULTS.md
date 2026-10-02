@@ -493,3 +493,59 @@ the only way to run these weights on the B60.
   (quadratic attention) — a 500k-token prompt took ~20 min. Quality also degrades
   beyond the trained length. Not recommended for agentic use.
 - **Decision:** track set to 262144 (native, full quality, 4x the original 64k).
+
+## B60 kernel-mod probe + prefill optimization — llama.cpp SYCL, Arc B60 (2026-10-02)
+
+**Branch/patch:** `kernel-work/patches/0001-*.patch` on upstream llama.cpp `5fc4f3c`
+**Build:** `kernel-work/Dockerfile.tuned` (oneAPI 2026.1, reproducible: clones
+upstream + applies patch inside the build). **Track:** `qwen38-27b-sycl-tuned-podman.yml` (port 8186).
+
+### Kernel mods tested (decode)
+Two independently-gated ESIMD changes on the Q4_K reorder matvec (the
+first-priority kernel for batch-1 decode, confirmed via dispatch at
+`ggml-sycl.cpp:4862`):
+
+1. `GGML_SYCL_BMG_STREAM_W` — weight loads with cache hints L1 uncached
+   (+ L2 uncached, and a milder L2-cached variant).
+2. `GGML_SYCL_BMG_PREFETCH` — LSC prefetch of the next weight block
+   (qs+scales) one iteration ahead, to raise outstanding-request count.
+
+**Result: all neutral.** Warmup-saturated single-GPU A/B (K=256, 9 reps):
+
+| Variant | decode median | MAD |
+|---|---|---|
+| stock `full-intel` | 45.3 t/s | 2.1 |
+| L1+L2 uncached | 38.9 (cold-order artifact) / ~45 warm | — |
+| L1 uncached + L2 cached | 46.2 | 1.4 |
+| prefetch-only | 45.4 | 1.3 |
+
+All within the ±30% intra-session clock band. **Client BMG exposes no clock
+lock** (no `xpu-smi`/`gt` sysfs/`debugfs`), so sub-5% effects are unresolvable
+here. Consistent with prior probes: **batch-1 decode is bandwidth-bound; local
+kernel/cache-hint mods do not move the ceiling.**
+
+### Prefill optimization (the real win) — DEPLOYED
+Prefill is compute-bound (MMQ GEMM path), so the lever is **ubatch**, not the
+decode matvec. Server-side `prompt eval time` timing (client HTTP timing is too
+noisy — see `prefill_probe.py`):
+
+| Config | 32k | 64k | 128k | fits |
+|---|---|---|---|---|
+| `-ub 1024` (old stock) | 623 | 570 | 470 | 200k ✓ |
+| `-ub 2048` | **691** | **626** | **506** | ≤160k ✓ |
+| `-ub 4096` | — | — | — | OOM even @128k |
+
+`-ub 1536` gave **no** gain (622/567/466) — the win is specific to the
+GEMM-tile-aligned 2048. At **200k ctx** memory is too tight (weights 14.3 GB +
+KV + MTP draft): `-ub 1280` crashes during prefill.
+
+**Decision:** the 27B track (`qwen38-27b-sycl-podman.yml`) now runs
+**160k ctx + `-b 4096 -ub 2048`** → **+8-11% prefill, decode unchanged**
+(ubatch doesn't affect batch-1 decode). The 200k→160k context drop is what
+frees the VRAM for the larger ubatch.
+
+### Tooling added
+- `benchmarks/bench_matrix.py` — prefill+decode across 16k..128k with sustained-clock warmup
+- `benchmarks/prefill_probe.py` — reads the server's own `prompt eval time` (accurate prefill)
+- `benchmarks/single_gpu_ab.py` — warmup-saturated single-GPU A/B
+- `benchmarks/ab_bench.py` — interleaved two-endpoint A/B with sign test

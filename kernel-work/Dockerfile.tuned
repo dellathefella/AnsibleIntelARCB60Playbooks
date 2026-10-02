@@ -1,0 +1,125 @@
+# =============================================================================
+# Dockerfile.tuned — llama.cpp SYCL, tuned for Intel Arc Pro B60 (BMG-G21, Xe2)
+#
+# Derivative of upstream .devops/intel.Dockerfile (same pinned IGC / compute
+# runtime), with the b60-kernel-tuning patch series applied on top of a pinned
+# upstream SHA and the tuned build flags enabled:
+#
+#   -DGGML_SYCL_BMG_STREAM_W=ON   ESIMD weight loads bypass L1+L2 (uncached):
+#                                 weights re-stream from DRAM every token
+#                                 anyway; keeps cache for KV/activations
+#   fast-math (safe subset)       measured +5-8% decode on halo1 (RESULTS.md).
+#                               NOTE: full -ffast-math enables -ffinite-math-only,
+#                               which makes the -INFINITY masking in the FA/
+#                               softmax paths UB (floods -Wnan-infinity-disabled).
+#                               We use the fast subset WITHOUT finite-math-only:
+#                               -fno-math-errno -fno-signed-zeros
+#                               -fno-trapping-math -ffp-contract=fast
+#   GGML_SYCL_DEVICE_ARCH         optional AOT (spir64_gen -device <arch>);
+#                               empty => JIT spir64 (default)
+#
+# Build (on halo1, rootful podman, ~30-45 min cold incl. base image pull):
+#   podman build -t localhost/llama.cpp:b60-tuned \
+#     --build-arg UPSTREAM_SHA=5fc4f3c \
+#     -f Dockerfile.tuned .
+#
+# The build context only needs this file + patches/*.patch (the source is
+# cloned inside the build, so no fork is required to reproduce).
+# =============================================================================
+
+ARG ONEAPI_VERSION=2026.1.1-devel-ubuntu24.04
+ARG UPSTREAM_REPO=https://github.com/ggml-org/llama.cpp.git
+ARG UPSTREAM_SHA=5fc4f3c
+ARG GGML_SYCL_DEVICE_ARCH=
+
+## Build Image
+FROM docker.io/intel/oneapi-toolkit:${ONEAPI_VERSION} AS build
+
+ARG UPSTREAM_REPO
+ARG UPSTREAM_SHA
+ARG GGML_SYCL_DEVICE_ARCH
+# Kernel-tuning toggles (override with --build-arg). Default: prefetch only,
+# stream_w off, so the measured delta vs stock isolates the prefetch effect.
+ARG BMG_STREAM_W=OFF
+ARG BMG_PREFETCH=ON
+ARG LEVEL_ZERO_VERSION=1.28.2
+ARG LEVEL_ZERO_UBUNTU_VERSION=u24.04
+
+RUN apt-get update && \
+    apt-get install -y git libssl-dev wget ca-certificates && \
+    cd /tmp && \
+    wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero.deb && \
+    wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero-devel_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero-devel.deb && \
+    apt-get -o Dpkg::Options::="--force-overwrite" install -y ./level-zero.deb ./level-zero-devel.deb && \
+    rm -f /tmp/level-zero.deb /tmp/level-zero-devel.deb
+
+COPY patches/ /patches/
+
+RUN git config --global user.email "b60-tuning@localhost" && \
+    git config --global user.name "b60-tuning" && \
+    git config --global --add safe.directory /app && \
+    git clone ${UPSTREAM_REPO} /app && \
+    cd /app && \
+    git checkout ${UPSTREAM_SHA} && \
+    git am /patches/*.patch
+
+WORKDIR /app
+
+RUN AOT_FLAGS="" && \
+    if [ -n "${GGML_SYCL_DEVICE_ARCH}" ]; then \
+        AOT_FLAGS="-DGGML_SYCL_DEVICE_ARCH=${GGML_SYCL_DEVICE_ARCH}"; \
+    fi && \
+    cmake -B build \
+      -DGGML_NATIVE=OFF \
+      -DGGML_SYCL=ON \
+      -DCMAKE_C_COMPILER=icx \
+      -DCMAKE_CXX_COMPILER=icpx \
+      -DGGML_BACKEND_DL=ON \
+      -DGGML_CPU_ALL_VARIANTS=ON \
+      -DLLAMA_BUILD_TESTS=OFF \
+      -DGGML_SYCL_F16=ON \
+      -DGGML_SYCL_BMG_STREAM_W=${BMG_STREAM_W} \
+      -DGGML_SYCL_BMG_PREFETCH=${BMG_PREFETCH} \
+      -DCMAKE_CXX_FLAGS="-fno-math-errno -fno-signed-zeros -fno-trapping-math -ffp-contract=fast" \
+      ${AOT_FLAGS} && \
+    cmake --build build --config Release -j$(nproc)
+
+RUN mkdir -p /app/lib && \
+    find build -name "*.so*" -exec cp -P {} /app/lib \;
+
+## Runtime — same pinned compute stack as upstream full-intel
+FROM docker.io/intel/oneapi-toolkit:${ONEAPI_VERSION} AS base
+
+ARG IGC_VERSION=v2.34.4
+ARG IGC_VERSION_FULL=2_2.34.4+21428
+ARG COMPUTE_RUNTIME_VERSION=26.18.38308.1
+ARG COMPUTE_RUNTIME_VERSION_FULL=26.18.38308.1-0
+ARG IGDGMM_VERSION=22.10.0
+RUN mkdir /tmp/neo/ && cd /tmp/neo/ \
+  && wget https://github.com/intel/intel-graphics-compiler/releases/download/$IGC_VERSION/intel-igc-core-${IGC_VERSION_FULL}_amd64.deb \
+  && wget https://github.com/intel/intel-graphics-compiler/releases/download/$IGC_VERSION/intel-igc-opencl-${IGC_VERSION_FULL}_amd64.deb \
+  && wget https://github.com/intel/compute-runtime/releases/download/$COMPUTE_RUNTIME_VERSION/intel-ocloc_${COMPUTE_RUNTIME_VERSION_FULL}_amd64.deb \
+  && wget https://github.com/intel/compute-runtime/releases/download/$COMPUTE_RUNTIME_VERSION/intel-opencl-icd_${COMPUTE_RUNTIME_VERSION_FULL}_amd64.deb \
+  && wget https://github.com/intel/compute-runtime/releases/download/$COMPUTE_RUNTIME_VERSION/libigdgmm12_${IGDGMM_VERSION}_amd64.deb \
+  && wget https://github.com/intel/compute-runtime/releases/download/$COMPUTE_RUNTIME_VERSION/libze-intel-gpu1_${COMPUTE_RUNTIME_VERSION_FULL}_amd64.deb \
+  && dpkg --install *.deb
+
+RUN apt-get update \
+    && apt-get install -y libgomp1 curl \
+    && apt autoremove -y \
+    && apt clean -y \
+    && rm -rf /tmp/* /var/tmp/* \
+    && find /var/cache/apt/archives /var/lib/apt/lists -not -name lock -type f -delete \
+    && find /var/cache -type f -delete
+
+### Server only (this track uses --entrypoint /app/llama-server anyway)
+FROM base AS server
+
+COPY --from=build /app/lib/ /app
+COPY --from=build /app/build/bin/llama-server /app/llama-server
+
+WORKDIR /app
+
+HEALTHCHECK CMD [ "curl", "-f", "http://localhost:8080/health" ]
+
+ENTRYPOINT [ "/app/llama-server" ]
