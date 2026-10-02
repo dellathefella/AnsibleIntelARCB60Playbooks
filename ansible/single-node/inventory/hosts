@@ -15,7 +15,7 @@
 # SYCL backend — llama.cpp SYCL tracks (require Resizable BAR):
 #   qwen38-27b-sycl (Qwen3.8-27B IQ3_S→Q4_K + MTP, 200k ctx, port 8183)
 #   qwen36-a3b-moe  (Qwen3.6-35B-A3B MoE UD-Q4_K_S, 32k ctx, port 8184)
-#   qwen36-a3b-escha-w2 (Qwen3.6-35B-A3B Escha W2 IQ2_XXS + MTP, 64k ctx, port 8187)
+#   qwen36-a3b-escha-w2 (Qwen3.6-35B-A3B Escha W2 IQ2_XXS + MTP, 256k ctx, port 8187)
 [sycl]
 halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
 

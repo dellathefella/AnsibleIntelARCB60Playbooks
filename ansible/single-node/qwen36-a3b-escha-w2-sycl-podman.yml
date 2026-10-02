@@ -16,9 +16,10 @@
 # community GGUF re-quant (peasantsmith, IQ2_XXS + MTP) which llama.cpp/SYCL
 # CAN run on the B60.
 #
-# 9.68 GiB weights leave ~14 GiB for KV on the 24 GB card -> 64k ctx fits
-# with headroom. A3B MoE (8/256 experts active) streams few bytes/token, so
-# decode is fast. See benchmarks/RESULTS.md.
+# 9.68 GiB weights leave ~14 GiB for KV on the 24 GB card. The model's native
+# trained context is 262144 (256k) — that is the ceiling without rope scaling.
+# A3B MoE (8/256 experts active) streams few bytes/token, so decode stays fast
+# even at 256k. See benchmarks/RESULTS.md.
 #
 # One GPU, one track: stops the other tracks before claiming the device.
 # =============================================================================
@@ -43,7 +44,10 @@
     model_sha256: "9234f0cf49c7bb7384a93bb5718cceced8eceafd3a19f8278b153382fcbccf64"
     model_size: 10396663168
 
-    ctx: 65536
+    # Native ceiling is 262144 (256k) — llama.cpp clamps -c to the model's
+    # trained length. YaRN can push to 512k+ but prefill drops to ~410 t/s
+    # (quadratic attention: 500k tok = ~20 min), impractical for agentic use.
+    ctx: 262144
     host_port: 8187
 
     n_gpu_layers: 99
@@ -111,7 +115,7 @@
     opencode_model_id: "qwen3.6-35b-a3b-escha-w2"
     opencode_provider_name: "Qwen 3.6 35B A3B Escha W2 (Arc B60)"
     opencode_model_name: "Qwen 3.6 35B A3B Escha W2 (IQ2_XXS + MTP)"
-    opencode_context_limit: 65536
+    opencode_context_limit: 262144
     opencode_output_limit: 8192
 
   tasks:

@@ -483,3 +483,13 @@ the only way to run these weights on the B60.
   agentic-coding track. For throughput, vLLM XPU (AWQ) still wins on batching.
 - Quality is 2-bit IQ2_XXS — expect degradation vs the UD-Q4_K_S MoE track;
   benchmarked for speed/context, not fidelity.
+
+### Context ceiling (Escha W2)
+- **Native max = 262144 (256k).** llama.cpp clamps `-c` to the model's trained
+  position length; requesting more without rope scaling silently caps at 256k.
+- **256k verified:** loads healthy, 100k-token request served at 760 t/s prefill.
+- **YaRN 512k works but impractical:** `--rope-scaling yarn --rope-scale 2
+  --yarn-orig-ctx 262144` loads 524288 and serves, but prefill falls to ~410 t/s
+  (quadratic attention) — a 500k-token prompt took ~20 min. Quality also degrades
+  beyond the trained length. Not recommended for agentic use.
+- **Decision:** track set to 262144 (native, full quality, 4x the original 64k).
