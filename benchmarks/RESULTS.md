@@ -387,6 +387,51 @@ from userspace here.
 **Reproducible wins found this session:** only `-ffast-math` source build
 (+5–8% decode, see source-build probe above). Everything else is noise.
 
+## DFlash drafter investigation — 2026-10-01
+
+DFlash = llama.cpp's `draft-dflash` speculative method (`src/models/dflash.cpp`):
+an EAGLE-style drafter that reads `target_layers` hidden states from the target
+and drafts token blocks via a trained conv + selector backbone. Distinct from
+the built-in MTP (NextN) head. Pre-trained DFlash2 GGUFs exist for this exact
+model (`z-lab/Qwen3.8-27B-DFlash2-GGUF`): Q4_K_M 1.06 GiB, Q8_0 1.92 GiB —
+tiny, fit alongside the 14.3 GB target.
+
+Tested on the SYCL track (8k ctx, 5 reps, warm, interleaved):
+
+| Config | decode t/s | draft acc |
+|---|---:|---:|
+| MTP + ngram (baseline) | 40–45 | 86–94% |
+| DFlash-Q4_K_M alone | 20.1 | 33% |
+| DFlash-Q8_0 + ngram | 42–43 | 85–87% |
+| DFlash-Q8 + MTP + ngram | **load fail** | — |
+
+Findings:
+
+- **DFlash-alone is slow (33% acceptance).** The pre-trained DFlash2 draft was
+  trained against the *base* Qwen3.8-27B, but our target is the *tuned*
+  IQ3_S→Q4_K variant. The hidden-state mismatch collapses draft acceptance,
+  so speculation mostly fails and decode drops to ~20 t/s.
+- **DFlash-Q8 + ngram ≈ MTP + ngram** (42–43 vs 40–45 t/s, overlapping
+  error bars). No reproducible win — the ngram layer is doing most of the
+  work and MTP's built-in head already matches the tuned target well.
+- **DFlash + MTP cannot stack.** Passing `-md <dflash>` with `draft-mtp` in
+  the spec-type makes llama.cpp look for MTP layers *in the draft file*:
+  "context type MTP requested but model doesn't contain MTP layers" → load
+  fails. The `-md` draft slot and the target's MTP head are mutually
+  exclusive; you pick one external draft source, optionally + ngram-mod.
+
+**To truly "build a DFlash drafter based on the local model"** (i.e. one that
+complements the *tuned* target with high acceptance) you'd need to TRAIN a
+DFlash draft against the tuned target's hidden states — z-lab's DFlash
+training pipeline (PyTorch), running the 27B to extract features over a
+corpus, train the conv/selector backbone, then convert to GGUF. That's a
+real ML-training project and needs a training-capable GPU (XPU training is
+not viable here); it is not a download-and-run.
+
+**Verdict:** pre-trained DFlash doesn't beat the existing MTP+ngram on this
+tuned model, and can't stack with MTP. The MTP head (built into the tuned
+GGUF) remains the best drafter for this rig.
+
 ## Interpretation
 
 - **Small-context cliff root cause:** without ReBAR the host-visible VRAM window
