@@ -34,7 +34,7 @@
 
     docker_image: "docker.io/vllm/vllm-openai-xpu:latest"
     docker_container_name: "qwen38-27b-vllm-xpu"
-    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe"]
+    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe", "qwen36-a3b-escha-w2"]
 
     hf_repo: "philbert440/Qwen3.8-27B-W4A16-AWQ"
     served_model_name: "qwen3.8-27b"

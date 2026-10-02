@@ -32,7 +32,7 @@
 
     docker_image: "ghcr.io/ggml-org/llama.cpp:full-intel"
     docker_container_name: "qwen36-a3b-moe"
-    sibling_containers: ["qwen38-27b-sycl", "qwen38-27b-vllm-xpu"]
+    sibling_containers: ["qwen38-27b-sycl", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2"]
 
     hf_repo: "unsloth/Qwen3.6-35B-A3B-MTP-GGUF"
     model: "Qwen3.6-35B-A3B-UD-Q4_K_S.gguf"

@@ -450,3 +450,36 @@ GGUF) remains the best drafter for this rig.
   same missing ReBAR. llama.cpp/Vulkan is the only GPU path on this rig.
 - **OpenVINO:** GPU plugin is L0-only → also blocked; CPU-only fallback measured
   ~4.6 t/s at 7B int4 (see OpenVINO probe above). Rejected.
+
+---
+
+## Qwen3.6-35B-A3B Escha W2 (IQ2_XXS + MTP) — llama.cpp SYCL, Arc B60
+
+**Model:** `peasantsmith/Qwen3.6-35B-A3B-Escha-W2-GGUF-MTP` → `escha-w2-IQ2_XXS.gguf` (9.68 GiB)
+**Track:** `qwen36-a3b-escha-w2-sycl-podman.yml` · port 8187 · 64k ctx · MTP+ngram-mod (draft-n-max 5)
+
+### Why a GGUF re-quant
+The upstream `EschaLabs/Qwen3.6-35B-A3B-Escha-W2` ships a **custom `eschamoe`
+2-bit safetensors** quant. It only runs on EschaLabs' own CUDA (SGLang/ZML) or
+MLX runtimes — **no Intel Arc / XPU / SYCL path exists**, and llama.cpp cannot
+read the `eschamoe` format. The community GGUF re-quant (IQ2_XXS + MTP head) is
+the only way to run these weights on the B60.
+
+### Measured (halo1, Arc Pro B60 24 GB, SYCL)
+| Metric | Value |
+|---|---|
+| Single-stream decode | **43.2 ± 2.2 t/s** |
+| MTP draft acceptance | **89%** |
+| Prefill (5.2k tok) | 740 t/s |
+| Concurrency n=4 | 33.6 tok/s agg (parallel=1 → queues) |
+| Concurrency n=8 | 36.1 tok/s agg |
+
+### Notes
+- **Fastest decode of any track on this rig.** A3B MoE (8/256 experts active)
+  streams few bytes/token, and the 2-bit weights cut bandwidth further; 89% MTP
+  acceptance compounds it.
+- 9.68 GiB weights leave ~14 GiB for KV → 64k ctx fits with large headroom.
+- Concurrency is flat by design (`--parallel 1`); this is a single-stream
+  agentic-coding track. For throughput, vLLM XPU (AWQ) still wins on batching.
+- Quality is 2-bit IQ2_XXS — expect degradation vs the UD-Q4_K_S MoE track;
+  benchmarked for speed/context, not fidelity.

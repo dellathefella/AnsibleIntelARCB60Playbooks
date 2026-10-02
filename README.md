@@ -18,6 +18,8 @@ container. One GPU, one track at a time.
 | --- | --- | --- | --- | --- |
 | `qwen38-27b-sycl-podman.yml` | Qwen3.8-27B (IQ3_S→Q4_K tuned GGUF + MTP, ~14.3 GB) | `qwen38-27b-sycl` | 8183 | 200000 |
 | `qwen36-a3b-moe-sycl-podman.yml` | Qwen3.6-35B-A3B MoE (UD-Q4_K_S + MTP, ~19.9 GiB) | `qwen36-a3b-moe` | 8184 | 32768 |
+| `qwen38-27b-vllm-xpu-podman.yml` | Qwen3.8-27B (W4A16 AWQ, vLLM XPU) | `qwen38-27b-vllm-xpu` | 8185 | 32000 |
+| `qwen36-a3b-escha-w2-sycl-podman.yml` | Qwen3.6-35B-A3B Escha W2 (IQ2_XXS + MTP, ~9.7 GiB) | `qwen36-a3b-escha-w2` | 8187 | 65536 |
 
 Each track exposes an OpenAI-compatible API (`/v1/*`, `/health`) on the LAN and
 renders:

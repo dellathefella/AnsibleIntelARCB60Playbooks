@@ -1,48 +1,50 @@
 ---
 # =============================================================================
-# qwen38-27b-sycl-podman.yml
-# Qwen3.8-27B (IQ3_S→Q4_K tuned GGUF, MTP draft head) — llama.cpp via Podman,
-# SYCL/Level-Zero backend (full-intel image).
+# qwen36-a3b-escha-w2-sycl-podman.yml
+# Qwen3.6-35B-A3B MoE (EschaLabs W2 2-bit, GGUF re-quant with MTP head) —
+# llama.cpp via Podman, SYCL/Level-Zero backend (full-intel image).
 #
 #   image           ghcr.io/ggml-org/llama.cpp:full-intel (PULLED, never built)
-#   model           Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf
-#                   (Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF, ~14.3 GB,
-#                   0 I-Quant tensors -> XMX/DPAS stays on the GPU)
-#   backend         SYCL/Level-Zero — REQUIRES Resizable BAR. The rebar-gate
-#                   task fails the play on rigs without a large prefetchable
-#                   BAR; there is no Vulkan fallback (abysmal without ReBAR).
-#   API             OpenAI-compatible /v1/* + /health on port 8183
-#   launch script   ~/scripts/qwen38-27b-sycl-start.sh
+#   model           escha-w2-IQ2_XXS.gguf (peasantsmith/...-GGUF-MTP, 9.68 GiB)
+#   backend         SYCL/Level-Zero — REQUIRES Resizable BAR (rebar-gate.yml).
+#   API             OpenAI-compatible /v1/* + /health on port 8187
+#   launch script   ~/scripts/qwen36-a3b-escha-w2-sycl-start.sh
 #
-# One GPU, one track: this track stops the MoE track's container
-# (qwen36-a3b-moe) before claiming the device, and vice versa.
+# NOTE on the original: EschaLabs/Qwen3.6-35B-A3B-Escha-W2 ships a CUSTOM
+# `eschamoe` 2-bit safetensors quant that only runs on EschaLabs' own CUDA
+# (SGLang/ZML) or MLX runtimes — no Intel Arc path. This track uses the
+# community GGUF re-quant (peasantsmith, IQ2_XXS + MTP) which llama.cpp/SYCL
+# CAN run on the B60.
 #
-# Measured on halo1 (32 GiB ReBAR, 2026-10-01): ~36-46 t/s decode,
-# ~614-660 t/s long-prefill at 128k. See benchmarks/RESULTS.md.
+# 9.68 GiB weights leave ~14 GiB for KV on the 24 GB card -> 64k ctx fits
+# with headroom. A3B MoE (8/256 experts active) streams few bytes/token, so
+# decode is fast. See benchmarks/RESULTS.md.
+#
+# One GPU, one track: stops the other tracks before claiming the device.
 # =============================================================================
 
-- name: "llama.cpp SYCL — Qwen3.8-27B (IQ3_S→Q4_K + MTP) on Arc B60"
+- name: "llama.cpp SYCL — Qwen3.6-35B-A3B Escha W2 (IQ2_XXS + MTP) on Arc B60"
   hosts: sycl
   gather_facts: true
   become: true
-  tags: [qwen38-27b-sycl-podman]
+  tags: [qwen36-a3b-escha-w2-sycl-podman]
   vars:
     # =====================================================================
-    # Qwen3.8-27B SYCL track vars — self-contained, no group_vars
+    # Qwen3.6-35B-A3B Escha W2 SYCL track vars — self-contained, no group_vars
     # =====================================================================
-    track_stem: "qwen38-27b-sycl"
+    track_stem: "qwen36-a3b-escha-w2"
 
     docker_image: "ghcr.io/ggml-org/llama.cpp:full-intel"
-    docker_container_name: "qwen38-27b-sycl"
-    sibling_containers: ["qwen36-a3b-moe", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2"]
+    docker_container_name: "qwen36-a3b-escha-w2"
+    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe", "qwen38-27b-vllm-xpu"]
 
-    hf_repo: "Greatjedi/Qwen3.8-27B-Intel-Arc-Tuned-GGUF"
-    model: "Qwen3.8-27B-GSQ-RCO-IQ3_S-Intel-Arc-Tuned-MTP-Q4_K.gguf"
-    model_sha256: "2170ff045d36dfa1ac5cad5a9f4f1945f5a784a93466a0449dbb6ed8ec1eacce"
-    model_size: 15359440960
+    hf_repo: "peasantsmith/Qwen3.6-35B-A3B-Escha-W2-GGUF-MTP"
+    model: "escha-w2-IQ2_XXS.gguf"
+    model_sha256: "9234f0cf49c7bb7384a93bb5718cceced8eceafd3a19f8278b153382fcbccf64"
+    model_size: 10396663168
 
-    ctx: 200000
-    host_port: 8183
+    ctx: 65536
+    host_port: 8187
 
     n_gpu_layers: 99
     flash_attn: "on"
@@ -54,9 +56,7 @@
     cache_type_v: q4_0
     parallel_slots: 1
 
-    # The tuned GGUF keeps the Layer-64 NextN draft head (Q6_K), so MTP
-    # speculation works with no separate draft model. draft-n-max 5 is the
-    # measured sweet spot (98-100% acceptance; 8 OOMs at 200k ctx).
+    # MTP draft head is built into the GGUF; draft-n-max 5 measured best.
     enable_speculative: true
     spec_type: "ngram-mod,draft-mtp"
     spec_ngram_mod_n_match: 24
@@ -65,18 +65,14 @@
     spec_draft_n_max: 5
     spec_draft_p_min: 0.5
 
-    # Directories — plays run with become: true, so ansible_env.HOME would be
-    # /root. Use ansible_user (the original login user) for the home dir.
     _user_home: "/home/{{ ansible_user }}"
     _models_dir: "{{ _user_home }}/.local/share/b60-llama/models"
     _container_models_dir: "/models"
 
-    # Model download settings — token read on the controller ("" => public)
     hf_token_lookup: "{{ lookup('file', playbook_dir + '/../secrets/hf_token.txt', errors='ignore') | default('', true) | trim }}"
     hf_download_items:
       - { repo: "{{ hf_repo }}", file: "{{ model }}", dest_dir: "{{ _models_dir }}" }
 
-    # llama-server arguments — shared between the deployment and the debug hint
     _llama_args: >-
       -m {{ _container_models_dir }}/{{ model }}
       -ngl {{ n_gpu_layers }} -fa {{ flash_attn }}
@@ -94,8 +90,6 @@
       {%- if parallel_slots | int > 0 %} --parallel {{ parallel_slots }} {%- endif %}
       --host 0.0.0.0 --port {{ host_port }}
 
-    # Everything after `podman run -d --name`, shared between the deployment
-    # and the manual debug hint — keeps them from drifting.
     _podman_common_args: >-
       --rm
       --device /dev/dri
@@ -109,15 +103,15 @@
       {{ docker_image }}
       {{ _llama_args }}
 
-    # 200k ctx + 14 GB cold SYCL load takes minutes; allow ~10 min of retries.
+    # ~10 GB cold SYCL load; allow ~10 min of retries.
     podman_health_retries: 120
 
     # opencode config (rendered to the controller)
-    opencode_provider_id: "qwen-arc"
-    opencode_model_id: "qwen3.8-27b"
-    opencode_provider_name: "Qwen 3.8 27B (Arc B60)"
-    opencode_model_name: "Qwen 3.8 27B (IQ3_S→Q4_K + MTP)"
-    opencode_context_limit: 200000
+    opencode_provider_id: "qwen-arc-escha"
+    opencode_model_id: "qwen3.6-35b-a3b-escha-w2"
+    opencode_provider_name: "Qwen 3.6 35B A3B Escha W2 (Arc B60)"
+    opencode_model_name: "Qwen 3.6 35B A3B Escha W2 (IQ2_XXS + MTP)"
+    opencode_context_limit: 65536
     opencode_output_limit: 8192
 
   tasks:
@@ -136,7 +130,7 @@
     - name: Set up models directory
       ansible.builtin.include_tasks: tasks/podman-models-dir.yml
 
-    - name: Download the tuned GGUF if not present
+    - name: Download the Escha W2 GGUF if not present
       ansible.builtin.include_tasks: tasks/hf-download-files.yml
 
     - name: Verify model size + sha256
@@ -145,7 +139,7 @@
     # -----------------------------------------------------------------------
     # 3. Create and run the Podman container
     # -----------------------------------------------------------------------
-    - name: Stop the sibling track (one GPU, one track)
+    - name: Stop the sibling tracks (one GPU, one track)
       ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
 
     - name: Remove any existing container
