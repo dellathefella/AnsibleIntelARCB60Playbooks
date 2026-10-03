@@ -587,3 +587,33 @@ CPU expert GEMM ~2.8-16 TFLOPS eff bounds prefill; Strata-style VRAM expert
 tiering + doorbell CPU/GPU overlap (MIT, `dellathefella/Strata` branch
 `sycl-backend`, plan in `docs/SYCL_PORT.md`) targets 400-600 t/s prefill and
 >27 t/s decode on this exact link.
+
+## lagrange (3x Arc Pro B60, Xeon E5-2699 v3, 251 GB) — multi-GPU Flash-Next (2026-10-03)
+
+Links: dev0 = PCIe x4 Gen3 (2.5 GB/s H2D), dev1/dev2 = x8 Gen3 (6.8 GB/s).
+Host CPU is Haswell (AVX2 only, no VNNI) — CPU-expert hybrid decode halves
+vs halo1's Zen5 (12.4 vs 25.2 t/s), so resident-multi-GPU was the hope.
+
+| Config | prefill | decode (MTP) | status |
+|---|---|---|---|
+| 1-GPU hybrid ub8192 (dev1) | 293 @16k | 12.4 | stable |
+| 3-GPU resident `-sm layer` ub2048/c8k | 216 @4k | 19.0 | stable |
+| 3-GPU resident `-sm layer` ub4096/c16k | 150 @16k | — | stable, comms-bound |
+| 3-GPU resident `-sm layer` ub8192/c32k | — | — | dev0 GuC job hang -> GT reset -> SIGSEGV |
+| 3-GPU resident `-sm row` ub4096 | — | — | SIGSEGV |
+
+Conclusions:
+- llama.cpp multi-GPU (`-sm layer/row`) moves activations at every layer
+  boundary; prefill becomes PCIe-comms-bound and never beats the 1-GPU
+  hybrid's 293 t/s. Multi-GPU only helps decode (19.0 vs 12.4).
+- The x4 card's GT hangs under large resident buffers (xe job timeout,
+  "not started", GT reset in dmesg) — exclude dev0 from heavy configs or
+  keep buffers small.
+- Warmup "hang" = IGC JIT for 3 device kernel-sets on one core; persist
+  /root/.cache (neo_compiler_cache) across container runs.
+- Real 3-card prefill scaling needs pipeline parallelism (tokens cross
+  cards once per window) + per-card expert caches = the Strata SYCL port
+  (dellathefella/Strata, docs/SYCL_PORT.md), not stock llama.cpp splits.
+
+Serving endpoint on lagrange: `qwen38-flashnext-sycl` on 8183 = 1-GPU
+hybrid (dev1) ub8192 + MTP draft; JIT cache volume /data/neocache.
