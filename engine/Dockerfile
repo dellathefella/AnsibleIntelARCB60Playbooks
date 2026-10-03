@@ -23,6 +23,8 @@ ARG ONEAPI_VERSION=2026.1.1-devel-ubuntu24.04
 # master (qwen4exp capable). Engine changes land on this branch.
 ARG UPSTREAM_REPO=https://github.com/dellathefella/llama.cpp.git
 ARG UPSTREAM_SHA=arc-flash-engine
+# bump to invalidate the clone+build layer cache on rebuilds
+ARG ENGINE_REV=1
 ARG GGML_SYCL_DEVICE_ARCH=
 
 ## Build Image
@@ -30,11 +32,13 @@ FROM docker.io/intel/oneapi-toolkit:${ONEAPI_VERSION} AS build
 
 ARG UPSTREAM_REPO
 ARG UPSTREAM_SHA
+ARG ENGINE_REV
 ARG GGML_SYCL_DEVICE_ARCH
 ARG LEVEL_ZERO_VERSION=1.28.2
 ARG LEVEL_ZERO_UBUNTU_VERSION=u24.04
 
-RUN apt-get update && \
+RUN echo "engine rev ${ENGINE_REV}" && \
+    apt-get update && \
     apt-get install -y git libssl-dev wget ca-certificates && \
     cd /tmp && \
     wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero.deb && \
