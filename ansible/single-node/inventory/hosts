@@ -16,13 +16,15 @@
 #   qwen38-27b-sycl (Qwen3.8-27B IQ3_S→Q4_K + MTP, 200k ctx, port 8183)
 #   qwen36-a3b-moe  (Qwen3.6-35B-A3B MoE UD-Q4_K_S, 32k ctx, port 8184)
 #   qwen36-a3b-escha-w2 (Qwen3.6-35B-A3B Escha W2 IQ2_XXS + MTP, 256k ctx, port 8187)
+# halo1 (10.0.1.67) decommissioned 2026-10-03: SSD repurposed for lagrange.
+# lagrange: 3x Arc Pro B60 direct PCIe, 251 GB RAM, Xeon E5-2699 v3.
 [sycl]
-halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
+lagrange ansible_host=10.0.0.108 ansible_connection=ssh ansible_user=jdella
 
 # XPU backend — vLLM XPU tracks (require Resizable BAR):
 #   qwen38-27b-vllm-xpu (Qwen3.8-27B AWQ W4A16, 32k ctx, port 8185)
 [xpu]
-halo1 ansible_host=10.0.1.67 ansible_connection=ssh ansible_user=jdella
+lagrange ansible_host=10.0.0.108 ansible_connection=ssh ansible_user=jdella
 
 # Legacy rigs — no ReBAR; cannot run any track (the rebar-gate fails by
 # design). Kept for reference; no play targets this group.
