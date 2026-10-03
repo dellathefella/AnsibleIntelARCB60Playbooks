@@ -617,3 +617,32 @@ Conclusions:
 
 Serving endpoint on lagrange: `qwen38-flashnext-sycl` on 8183 = 1-GPU
 hybrid (dev1) ub8192 + MTP draft; JIT cache volume /data/neocache.
+
+## lagrange — Q8_0 vs IQ3_S hybrid (2026-10-03, Q4/Q8 focus directive)
+
+Q4 of Flash-Next is unobtainable: the GSQ-RCO repo (IQ3_S/IQ4_NL source) is
+gone from HF (404 even with token). Official unsloth/Qwen3.8-Flash-Next-GGUF
+ships Q8_0 (6 shards, 183.8 GB), UD-Q5_K_XL, UD-Q6_K_XL, BF16 + MTP variants.
+Downloaded Q8_0 (~100 MB/s), served 1-GPU hybrid on dev1 (same flags as the
+IQ3_S config: `-ngl 99 --cpu-moe -c 32768 -ub 8192 -t 8 -tb 16` + mtp-Q4_0
+draft, mmap mode — `--load-mode none` still wedges at c>=32768).
+
+| Quant (hybrid dev1) | PP @16k | TG median (MAD) |
+|---|---|---|
+| IQ3_S 83 GB | 289.5 t/s (post-reboot rebaseline; 293.1 orig) | 12.66 (0.11) |
+| Q8_0 175 GB | 204.4 t/s | 12.99 (0.53) |
+
+Findings:
+- Decode is NOT PCIe-link-bound under `--cpu-moe`: experts compute from RAM
+  page cache; only activations cross the link. Q8's plain int8 dots beat
+  IQ3's superblock dequant on the AVX2 Xeon — Q8_0 decodes as fast as IQ3_S
+  at 2x the bytes and much higher quality.
+- Prefill pays ~29% for Q8 (expert bytes through CPU GEMMs).
+- RAM ceiling: Q8_0 (175 GB) + IQ3_S (83 GB) cannot both stay hot in 251 GB —
+  serve one at a time (IQ3_S endpoint stopped during Q8_0 bench).
+- Kernel-spike tie-in (Strata tools/q4q8_kernel_bench): int8 packed-dot GEMV
+  = 2.7x float-dequant on B60; DPAS int8 8x16x32 verified 21.6 TOPS untiled.
+  GPU-resident Q8 experts (Strata tiering) should lift both PP and TG.
+
+Endpoint change: `qwen38-q8-sycl` on 8184 = Q8_0 hybrid (dev1) is the live
+serving endpoint; `qwen38-flashnext-sycl` (IQ3_S, 8183) stopped, restartable.
