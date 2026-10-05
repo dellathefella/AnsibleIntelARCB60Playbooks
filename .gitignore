@@ -5,7 +5,7 @@
 # HF/aria2 partial download artifacts
 *.gguf.aria2
 *.gguf.part
-
+sessions/
 # Ansible / Python
 *.retry
 __pycache__/
