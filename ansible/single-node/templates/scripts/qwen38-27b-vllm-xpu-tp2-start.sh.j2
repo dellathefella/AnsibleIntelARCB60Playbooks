@@ -30,8 +30,6 @@ XPU_DEVICES="{{ xpu_visible_devices }}"
 GPU_MEM_UTIL="{{ gpu_mem_util }}"
 KV_DTYPE="{{ kv_cache_dtype }}"
 SERVED_MODEL="{{ served_model_name }}"
-MAX_NUM_SEQS="{{ max_num_seqs }}"
-SPEC_CONFIG='{"method":"{{ spec_method }}","num_speculative_tokens":{{ spec_num_tokens }}}'
 
 # --- helper functions ---
 start_container() {
@@ -54,8 +52,6 @@ start_container() {
       --gpu-memory-utilization "$GPU_MEM_UTIL" \
       --kv-cache-dtype "$KV_DTYPE" \
       --dtype float16 \
-      --max-num-seqs "$MAX_NUM_SEQS" \
-      --speculative-config "$SPEC_CONFIG" \
       --host 0.0.0.0 --port "$PORT"
 }
 
