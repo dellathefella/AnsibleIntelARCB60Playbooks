@@ -81,6 +81,7 @@
       --kv-cache-dtype {{ kv_cache_dtype }}
       --dtype float16
       --enable-auto-tool-choice --tool-call-parser step3p5
+      --reasoning-parser qwen3
       --host 0.0.0.0 --port {{ host_port }}
 
     # Everything after `podman run -d --name`, shared between the deployment
