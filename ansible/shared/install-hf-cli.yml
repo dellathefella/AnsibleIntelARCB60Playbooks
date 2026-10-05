@@ -51,7 +51,10 @@
       ansible.builtin.pip:
         name: huggingface_hub
         state: present
-        extra_args: --break-system-packages
+        # --ignore-installed: distro-managed deps (e.g. Debian's
+        # typing-extensions) have no RECORD file and cannot be uninstalled
+        # by pip; reinstall into /usr/local instead of failing.
+        extra_args: --break-system-packages --ignore-installed
       tags: [install-hf-cli, packages]
 
     # -----------------------------------------------------------------------

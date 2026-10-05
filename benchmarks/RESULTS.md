@@ -646,3 +646,68 @@ Findings:
 
 Endpoint change: `qwen38-q8-sycl` on 8184 = Q8_0 hybrid (dev1) is the live
 serving endpoint; `qwen38-flashnext-sycl` (IQ3_S, 8183) stopped, restartable.
+
+## lagrange — vLLM XPU TP=2 track (Qwen3.8-27B AWQ, 2x B60) — 2026-10-05
+
+New track: `qwen38-27b-vllm-xpu-tp2-podman.yml` — same AWQ W4A16 artifact
+(`philbert440/Qwen3.8-27B-W4A16-AWQ`, 18.2 GiB) as the single-card vLLM
+track, served with `--tensor-parallel-size 2` (xccl allreduce) across
+**dev1+dev2** (x8 Gen3; dev0 excluded — x4 Gen3, GuC-hang prone),
+`ZE_AFFINITY_MASK=1,2`, fp8 KV, `--gpu-memory-utilization 0.95`, port 8188.
+
+**Why the Flash-Next AutoRound quant was rejected:** the
+`Minachist/Qwen3.8-Flash-Next-INT4-Mixed-AutoRound` 140B MoE artifact is
+CUDA-only (patched `vllm/vllm-openai` image, AutoRound compressed-tensors
+INT4/INT6 mixed, `qwen4_exp` hybrid-attention kernels, 2-4x NVIDIA cards +
+96 GiB NVMe PLE table). None of it loads on the XPU backend; TP does not
+change that. The GGUF Flash-Next tracks above remain the only Flash-Next
+path on this hardware.
+
+**Memory layout (per card):** weights 8.91 GiB + ~3 GiB activations/graph
+profiling → **8.27 GiB KV/card**; total **503,435 KV tokens** →
+**131,072 ctx** with 3.84x max concurrency (vs 32,000 on one card).
+
+### Measured (vllm_bench.py from the controller, 2 runs; longctx nonce probe)
+
+| Metric | TP=2 (2x B60) | single-card (halo1, 32k) | Δ |
+|---|---:|---:|---|
+| Single-stream decode | **38.2–38.4 t/s** | 22.9 t/s | **1.7x** |
+| Prefill (6.9k prompt, cold) | 1430 t/s | 1382 t/s | ~1.0x |
+| Prefill (warm/prefix-cached) | 11,509 t/s | — | — |
+| Concurrent n=4 | **138.9 t/s** agg | 83.7 t/s | **1.7x** |
+| Concurrent n=8 | **237.7 t/s** agg | 86.0 t/s | **2.8x** |
+| Max context | **131,072** | 32,000 | 4.1x |
+
+Long-context (nonce'd cold prefill + warm K=256 decode):
+
+| Prompt tokens | prefill | decode |
+|---|---:|---:|
+| 15,891 | 1428.9 t/s | 32.8 t/s |
+| 31,855 | 1276.9 t/s | 29.8 t/s |
+| 63,953 | 1046.0 t/s | 24.8 t/s |
+| 126,867 | 771.7 t/s | 23.1 t/s |
+
+Findings:
+- **Decode scales 1.7x with TP=2** (38 vs 23 t/s): weight bytes per card
+  halve and the PCIe allreduce tax is smaller than the bandwidth win —
+  unlike llama.cpp `-sm layer/row` splits (comms-bound, no prefill win).
+- **n=8 aggregate 2.8x** the single-card number — the 503k-token KV pool
+  keeps 8 streams resident where one card could only queue.
+- Cold prefill is ~unchanged (1430 vs 1382): prefill was already
+  compute-bound on one card; TP splits GEMMs but adds per-layer allreduce.
+- 126k-token prompts serve fine at 772 t/s prefill / 23 t/s decode —
+  128k ctx is genuinely usable, not just capacity (contrast the llama.cpp
+  dense track: 469 t/s / 17-20 t/s at the same size).
+- A 139k-token prompt correctly HTTP-400s (ctx ceiling enforced).
+
+**MTP:** the artifact ships an MTP head (`model-mtp.safetensors`,
+`mtp_num_hidden_layers: 1`) and this vLLM build lists a `qwen3_5_mtp`
+speculative method. A first `--speculative-config` probe crashed at startup
+(logs lost to `--rm`); a re-run got as far as accepting the spec config
+(`max_num_scheduled_tokens=2048` warning) before it was torn down — MTP on
+TP=2 is untested, not disproven. Track runs plain decode.
+
+Endpoint state: `qwen38-27b-vllm-xpu-tp2` on 8188 is the vLLM serving
+endpoint; the ad-hoc Flash-Next llama.cpp endpoints (`qwen38-q8-sycl`,
+`qwen38-flashnext-sycl`) were stopped by the track's sibling-stop and are
+restartable.

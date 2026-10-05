@@ -41,7 +41,7 @@
 
     docker_image: "localhost/llama.cpp:b60-tuned"
     docker_container_name: "qwen38-27b-sycl-tuned"
-    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2"]
+    sibling_containers: ["qwen38-27b-sycl", "qwen36-a3b-moe", "qwen38-27b-vllm-xpu", "qwen36-a3b-escha-w2", "qwen38-27b-vllm-xpu-tp2"]
 
     # Build inputs (kernel-work/ lives at the repo root, two levels above this play)
     kernel_work_src: "{{ playbook_dir }}/../../kernel-work"
