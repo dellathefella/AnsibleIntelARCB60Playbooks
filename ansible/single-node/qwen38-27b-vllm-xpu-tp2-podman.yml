@@ -55,10 +55,10 @@
     xpu_visible_devices: "1,2"
     _min_xpu_devices: 3
 
-    # 131072: TP=2 leaves ~9 GiB fp8 KV per card (~18 GiB total, ~4x the
-    # single-card budget); 128k fits with large headroom and stays well
-    # under the model's native 262144.
-    ctx: 131072
+    # 262144 = the model's native max. TP=2's measured KV pool is 503,435
+    # fp8 tokens total, so 256k fits at ~1.9x max concurrency (131072 fit
+    # at 3.84x). Requests beyond the pool queue rather than fail.
+    ctx: 262144
     host_port: 8188
     gpu_mem_util: "0.95"
     kv_cache_dtype: "fp8"
@@ -105,7 +105,7 @@
     opencode_model_id: "qwen3.8-27b-vllm-tp2"
     opencode_provider_name: "Qwen 3.8 27B vLLM-XPU TP2 (2x Arc B60)"
     opencode_model_name: "Qwen 3.8 27B (AWQ INT4, vLLM XPU, TP=2)"
-    opencode_context_limit: 131072
+    opencode_context_limit: 262144
     opencode_output_limit: 8192
 
   tasks:

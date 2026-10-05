@@ -24,7 +24,7 @@ lagrange ansible_host=10.0.0.108 ansible_connection=ssh ansible_user=jdella
 # XPU backend — vLLM XPU tracks (require Resizable BAR):
 #   qwen38-27b-vllm-xpu (Qwen3.8-27B AWQ W4A16, 32k ctx, port 8185)
 #   qwen38-27b-vllm-xpu-tp2 (Qwen3.8-27B AWQ W4A16, TP=2 across dev1+dev2,
-#                            128k ctx, port 8188)
+#                            256k ctx, port 8188)
 [xpu]
 lagrange ansible_host=10.0.0.108 ansible_connection=ssh ansible_user=jdella
 

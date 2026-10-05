@@ -666,6 +666,8 @@ path on this hardware.
 **Memory layout (per card):** weights 8.91 GiB + ~3 GiB activations/graph
 profiling → **8.27 GiB KV/card**; total **503,435 KV tokens** →
 **131,072 ctx** with 3.84x max concurrency (vs 32,000 on one card).
+Track later raised to the model-native **262,144 ctx** (~1.9x max
+concurrency out of the same 503k pool; requests beyond it queue).
 
 ### Measured (vllm_bench.py from the controller, 2 runs; longctx nonce probe)
 
