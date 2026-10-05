@@ -52,6 +52,9 @@
     # auto-caps max_num_scheduled_tokens (2048) when speculation is on.
     spec_method: "qwen3_5_mtp"
     spec_num_tokens: 2
+    # MTP drafter shrinks the hybrid Mamba/GDN cache pool; default
+    # max_num_seqs (256) then exceeds available blocks and startup fails.
+    max_num_seqs: 128
 
     _user_home: "/home/{{ ansible_user }}"
     _models_dir: "{{ _user_home }}/.local/share/b60-llama/models"
@@ -69,6 +72,7 @@
       --gpu-memory-utilization {{ gpu_mem_util }}
       --kv-cache-dtype {{ kv_cache_dtype }}
       --dtype float16
+      --max-num-seqs {{ max_num_seqs }}
       --speculative-config '{"method":"{{ spec_method }}","num_speculative_tokens":{{ spec_num_tokens }}}'
       --host 0.0.0.0 --port {{ host_port }}
 
