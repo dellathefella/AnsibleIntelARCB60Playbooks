@@ -63,6 +63,13 @@
     gpu_mem_util: "0.95"
     kv_cache_dtype: "fp8"
 
+    # MTP speculative decoding: the AWQ artifact ships an MTP head
+    # (model-mtp.safetensors, mtp_num_hidden_layers: 1) and this vLLM build
+    # exposes the qwen3_5_mtp spec method. num_speculative_tokens=2; vLLM
+    # auto-caps max_num_scheduled_tokens (2048) when speculation is on.
+    spec_method: "qwen3_5_mtp"
+    spec_num_tokens: 2
+
     _user_home: "/home/{{ ansible_user }}"
     _models_dir: "{{ _user_home }}/.local/share/b60-llama/models"
     _repo_dir: "{{ _models_dir }}/Qwen3.8-27B-W4A16-AWQ"
@@ -80,6 +87,7 @@
       --gpu-memory-utilization {{ gpu_mem_util }}
       --kv-cache-dtype {{ kv_cache_dtype }}
       --dtype float16
+      --speculative-config '{"method":"{{ spec_method }}","num_speculative_tokens":{{ spec_num_tokens }}}'
       --host 0.0.0.0 --port {{ host_port }}
 
     # Everything after `podman run -d --name`, shared between the deployment
@@ -102,7 +110,9 @@
 
     # opencode config (rendered to the controller)
     opencode_provider_id: "qwen-arc-vllm-tp2"
-    opencode_model_id: "qwen3.8-27b-vllm-tp2"
+    # Must equal served_model_name: opencode sends this id as the `model`
+    # param and vLLM 404s anything it doesn't serve.
+    opencode_model_id: "qwen3.8-27b"
     opencode_provider_name: "Qwen 3.8 27B vLLM-XPU TP2 (2x Arc B60)"
     opencode_model_name: "Qwen 3.8 27B (AWQ INT4, vLLM XPU, TP=2)"
     opencode_context_limit: 262144
