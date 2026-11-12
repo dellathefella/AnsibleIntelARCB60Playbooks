@@ -1,0 +1,27 @@
+# =============================================================================
+# podman-warmup.yml
+# Sends one long-context generation request after /health so the XPU kernel JIT
+# compiles the decode path before real traffic arrives. Without it the first
+# long-context request pays the compile cost (~10-90 s depending on shapes).
+#
+# Include with:
+#   host_port            host port the server listens on
+#   served_model_name    model id the server serves
+# =============================================================================
+---
+- name: Warm up the decode path (triggers XPU kernel JIT)
+  ansible.builtin.uri:
+    url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/v1/chat/completions"
+    method: POST
+    body_format: json
+    body:
+      model: "{{ served_model_name }}"
+      messages:
+        - role: user
+          content: "{{ ('def helper(x):\n    return x*2+1\n\n') * 900 }}Warmup."
+      max_tokens: 256
+      temperature: 0
+    status_code: 200
+    timeout: 900
+  changed_when: false
+  tags: [podman, deploy]

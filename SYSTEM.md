@@ -31,6 +31,7 @@ ansible/
     summary.yml                  final per-host completion summary
     qwen38-27b-sycl-podman.yml   dense 27B track (port 8183)
     qwen36-a3b-moe-sycl-podman.yml  MoE 35B-A3B track (port 8184)
+    qwen38-27b-vllm-xpu-tp4-podman.yml  dense 27B AWQ W4A16, TP=4 on 4x B60 (port 8081, 150 W/card)
     tasks/                       shared task files included by the tracks:
       rebar-gate.yml                 render node + PCI id + ReBAR window (mandatory)
       sycl-probe.yml                 sycl-ls device check inside the image
@@ -41,6 +42,8 @@ ansible/
       podman-remove-container.yml    podman rm -f before (re)launch
       podman-check-running.yml       start result + running check
       podman-wait-health.yml         sleep + poll /health
+      podman-warmup.yml              decode-path JIT warmup after /health
+      xpu-powerlimit.yml             per-card burst power cap (systemd oneshot)
       podman-render-launch-artifacts.yml  launch script + opencode config render
     inventory/
       hosts                      real inventory (sycl / legacy → aiservers)
@@ -68,6 +71,7 @@ membership.
 | --- | --- | --- |
 | `qwen38-27b-sycl-podman.yml` (Qwen3.8-27B IQ3_S→Q4_K + MTP, 200k ctx, port 8183) | `sycl` | `qwen38-27b-sycl-podman` |
 | `qwen36-a3b-moe-sycl-podman.yml` (Qwen3.6-35B-A3B UD-Q4_K_S + MTP, 32k ctx, port 8184) | `sycl` | `qwen36-a3b-moe-sycl-podman` |
+| `qwen38-27b-vllm-xpu-tp4-podman.yml` (Qwen3.8-27B AWQ W4A16, TP=4 across dev0..dev3, 262k ctx, port 8081, 150 W/card) | `xpu4` | `qwen38-27b-vllm-xpu-tp4-podman` |
 
 ### Template naming
 
@@ -112,7 +116,9 @@ shared task files from `tasks/`:
 6. `podman-stop-sibling.yml` — stop the other track's container (one GPU, one track)
 7. `podman-remove-container.yml` → `podman run` → `podman-check-running.yml`
 8. `podman-wait-health.yml` — sleep + poll `/health`
-9. `podman-render-launch-artifacts.yml` — render the launch script to the
+9. `podman-warmup.yml` — one long-context request to compile the decode path
+   (TP4 track; optional elsewhere)
+10. `podman-render-launch-artifacts.yml` — render the launch script to the
    target's `~/scripts/` and the opencode config to the controller's
    `rendered/opencode-configs/`
 

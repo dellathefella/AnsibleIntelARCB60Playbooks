@@ -9,6 +9,7 @@
 #   qwen36-a3b-moe-sycl-podman.yml        Qwen3.6-35B-A3B MoE UD-Q4_K_S (llama.cpp SYCL) [qwen36-a3b-moe-sycl-podman]
 #   qwen38-27b-vllm-xpu-podman.yml        Qwen3.8-27B AWQ INT4 (vLLM XPU)               [qwen38-27b-vllm-xpu-podman]
 #   qwen38-27b-vllm-xpu-tp2-podman.yml    Qwen3.8-27B AWQ INT4 (vLLM XPU, TP=2)         [qwen38-27b-vllm-xpu-tp2-podman]
+#   qwen38-27b-vllm-xpu-tp4-podman.yml    Qwen3.8-27B AWQ W4A16 (vLLM XPU, TP=4, 4x B60) [qwen38-27b-vllm-xpu-tp4-podman]
 #   qwen36-a3b-escha-w2-sycl-podman.yml   Qwen3.6-35B-A3B Escha W2 IQ2_XXS (llama.cpp SYCL) [qwen36-a3b-escha-w2-sycl-podman]
 #   qwen38-27b-sycl-tuned-podman.yml      Qwen3.8-27B, B60 kernel-tuned build (llama.cpp SYCL) [qwen38-27b-sycl-tuned-podman]
 #   summary.yml                           final per-host completion summary            [summary]
@@ -54,6 +55,10 @@
 - name: Track — Qwen3.8-27B AWQ INT4 (vLLM XPU, TP=2 on two cards)
   import_playbook: qwen38-27b-vllm-xpu-tp2-podman.yml
   tags: [qwen38-27b-vllm-xpu-tp2-podman]
+
+- name: Track — Qwen3.8-27B AWQ W4A16 (vLLM XPU, TP=4 on four cards)
+  import_playbook: qwen38-27b-vllm-xpu-tp4-podman.yml
+  tags: [qwen38-27b-vllm-xpu-tp4-podman]
 
 - name: Track — Qwen3.6-35B-A3B Escha W2 (llama.cpp SYCL)
   import_playbook: qwen36-a3b-escha-w2-sycl-podman.yml

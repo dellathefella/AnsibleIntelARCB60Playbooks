@@ -1,0 +1,47 @@
+# =============================================================================
+# xpu-powerlimit.yml
+# Installs a systemd oneshot that caps every Intel Arc B60's burst power limit.
+# Used on hosts whose total draw is bounded by a shared power conditioner.
+#
+# Include with:
+#   power_limit_watts   per-card burst power limit (e.g. 150)
+#   xpu_device_count    number of xpu-smi devices to cap (e.g. 4)
+# =============================================================================
+---
+- name: Install xpu-powerlimit script
+  ansible.builtin.copy:
+    dest: /usr/local/bin/xpu-powerlimit.sh
+    mode: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Cap Intel Arc B60 burst power on every xpu-smi device.
+      set -u
+      LIMIT="{{ power_limit_watts }}"
+      COUNT="{{ xpu_device_count }}"
+      for i in $(seq 0 $((COUNT - 1))); do
+        xpu-smi config --powerlimit="$LIMIT" --device="$i" || true
+      done
+
+- name: Install xpu-powerlimit systemd unit
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/xpu-powerlimit.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Intel Arc Pro B60 power limit ({{ power_limit_watts }} W)
+      After=multi-user.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/xpu-powerlimit.sh
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+- name: Enable and start xpu-powerlimit service
+  ansible.builtin.systemd_service:
+    name: xpu-powerlimit
+    enabled: true
+    state: started
+    daemon_reload: true

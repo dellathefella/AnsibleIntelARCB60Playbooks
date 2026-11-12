@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "{{ opencode_provider_id }}": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "{{ opencode_provider_name }}",
+      "options": {
+        "baseURL": "http://{{ ansible_host | default(inventory_hostname) }}:{{ host_port }}/v1",
+        "apiKey": "{{ track_stem }}-local"
+      },
+      "models": {
+        "{{ opencode_model_id }}": {
+          "name": "{{ opencode_model_name }}",
+          "limit": {
+            "context": {{ opencode_context_limit }},
+            "output": {{ opencode_output_limit }}
+          },
+          "cost": { "input": 0, "output": 0, "cache_read": 0, "cache_write": 0 }
+        }
+      }
+    }
+  }
+}

@@ -713,3 +713,62 @@ Endpoint state: `qwen38-27b-vllm-xpu-tp2` on 8188 is the vLLM serving
 endpoint; the ad-hoc Flash-Next llama.cpp endpoints (`qwen38-q8-sycl`,
 `qwen38-flashnext-sycl`) were stopped by the track's sibling-stop and are
 restartable.
+
+## 4x Arc Pro B60 (arcflash) — vLLM XPU TP=4: AWQ W4A16 vs FP8
+
+Rig: Supermicro H12SSL-i, EPYC 7452 (64 threads, 251 GiB RAM), 4x Arc Pro B60
+24 GB (PCIe 4.0 x8 each), Ubuntu 24.04, kernel 7.0.0-42, xe driver, ReBAR
+32 GiB per card, vLLM 0.31.0 (`vllm/vllm-openai-xpu:latest`), torch
+2.14.0+xpu. Power capped at 150 W/card via `xpu-powerlimit.service` (shared
+power conditioner; 130 W was the old cap).
+
+Benchmarks: llama-benchy 0.4.0 and a nonce'd cold-prefill + warm decode
+harness. Decode is steady-state (repeat after the one-time XPU kernel JIT;
+the first long-context decode pays ~10–90 s of compilation).
+
+### Model / spec matrix (TP=4, 262k ctx, fp8 KV)
+
+| Config | decode @6.9k | prefill @124k | n=8 agg | notes |
+|---|---:|---:|---:|---|
+| FP8 (`Qwen3.8-27B-FP8`), no spec | 27.5 t/s | 1,082 t/s | 188 t/s | original baseline |
+| FP8 + MTP spec (3 drafts) | 35.3 t/s | 1,553 t/s (6.9k) | 292 t/s | +33% decode |
+| AWQ W4A16 + MTP spec (3 drafts) | 54.1 t/s | 2,379 t/s (6.9k) | 392 t/s | MTP hurts AWQ |
+| AWQ W4A16, no spec (batch 8192) | 66.9 t/s short / 54.3 @6.9k | 1,458 t/s | 388 t/s | best short decode |
+| AWQ W4A16, no spec (batch 32768, seqs 32) | 58.8 short / 54.9 @6.9k (with `qwen3` reasoning parser) | 1,591 t/s @150W | 396 t/s @150W | final deployed config |
+
+### Final config at 150 W/card (AWQ W4A16, no spec, batch 32768, seqs 32)
+
+| Metric | 130 W/card | 150 W/card | delta |
+|---|---:|---:|---:|
+| decode short (~20 tok ctx) | 66.9 t/s | 66.2 t/s | ~0 |
+| decode @6.9k ctx | 55.2 t/s | 55.2–61.7 t/s | +0–12% |
+| decode @124k ctx (steady, K=256) | 36.7 t/s | 36.8 t/s | ~0 |
+| prefill @124k | 1,511 t/s | 1,591 t/s | +5% |
+| prefill @18k | — | 2,447 t/s | — |
+| n=8 aggregate | 358 t/s | 396 t/s | +11% |
+| n=32 aggregate | 469 t/s | 506 t/s | +8% |
+| decode power/card | ~103 W | ~100–105 W | memory-bound |
+| prefill power/card | ~130 W | ~145–150 W | at cap |
+
+### Verdicts
+
+- **AWQ W4A16 is the win**: ~2x decode and ~1.4x prefill vs FP8 on the same
+  four-card TP=4 rig, with lower decode power. Use
+  `philbert440/Qwen3.8-27B-W4A16-AWQ`.
+- **MTP speculative decoding is off**: it helps FP8 (+33%) but hurts AWQ
+  (54 vs 66 t/s short decode, 16 vs 18.5 t/s at 124k). The AWQ draft layer
+  costs more than it saves.
+- **dtype float16 beats bfloat16** for the AWQ WNA16 kernel on XPU:
+  66.9 vs 64.2 t/s short decode, 1,458 vs 1,343 t/s prefill @124k.
+- **The `qwen3` reasoning parser costs ~10% on short decode** (58.8 vs 66.9
+  t/s) but keeps `<think>` blocks out of `content` for opencode. It is on in
+  the deployed track; drop `--reasoning-parser qwen3` if raw think tags are
+  acceptable and short-context decode matters more.
+- **batch 32768 / seqs 32** is the best prefill/concurrency point; decode is
+  unchanged vs batch 8192.
+- **150 W/card** is worth it where the conditioner allows: +5% prefill,
+  +8–11% concurrency, +0–12% medium-context decode. Short and long-context
+  decode are memory-bound and unchanged.
+- The first long-context request after a cold start pays XPU kernel JIT
+  (~10–90 s). The playbook and launch script now send a warmup request after
+  `/health`.
