@@ -809,6 +809,25 @@ attention/KV bound, where PP's sequential stages cost almost nothing and TP's
 allreduce overhead eats into the gain. PP's small-batch prefill is also hurt
 by pipeline bubbles (16.6K is disproportionately slow at 965 t/s).
 
+### KV pool / concurrent 262K sessions (TP=4, AWQ, fp8 KV)
+
+The engine reports the KV pool in tokens, not just `max_model_len`:
+
+| Config | KV pool | Concurrent 262K sessions |
+|---|---:|---:|
+| 0.90 / batch 16384 | 1,609,872 tokens | 6.14x |
+| 0.93 / batch 16384 | **1,696,225 tokens** | **6.47x** |
+| 0.93 / batch 32768 | 1,390,905 tokens | 5.31x |
+
+`max_model_len` caps a single request at 262,144; the pool is what limits how
+many long sessions can be resident at once. Raising the prefill batch from
+16384 to 32768 buys ~5% prefill but costs ~1 GiB of KV per card (18% fewer
+tokens), so batch 16384 is the right default for long-context agent sessions.
+
+**8 concurrent ~260K sessions do not fit** (8 x 260K = ~2.08M tokens > 1.70M):
+vLLM admits ~6 and queues the rest. For 8 resident sessions, cap each at
+~210K (8 x 210K = 1.68M) or use the 4x-DP layout for more total KV.
+
 **Deployment note:** the XPU container needs `--group-add keep-groups`. Without
 it `torch.xpu.device_count()` is 0 inside the container and vLLM crash-loops
 with `RuntimeError: Failed to infer device type`. The TP4/TP2/single-GPU

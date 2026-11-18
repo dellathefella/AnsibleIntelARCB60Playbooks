@@ -22,10 +22,11 @@
 #   aggregate 358 t/s @ c8, 506 t/s @ c32
 #   vs the FP8 TP=4 baseline: ~2x decode, ~1.4x prefill.
 #
-# Re-measured 2026-11-17 at 0.93 / batch 32768 (see benchmarks/RESULTS.md):
-#   concurrency 66.4 t/s c1, 232.2 c4, 423.9 c8, 647.7 c16
+# Re-measured 2026-11-17 (see benchmarks/RESULTS.md):
+#   concurrency 66.4 t/s c1, 232.2 c4, 423.9 c8, 647.7 c16 (0.90 / batch 16384)
 #   prefill 2,420 t/s @ 16.6k, 1,950 @ 67.3k, 1,530 @ 135k, 1,258 @ 203k
-#   KV pool 1,609,872 tokens -> 6.14 concurrent 262,144-token sessions
+#   KV pool 1,696,225 tokens at 0.93 / batch 16384 -> 6.47 concurrent
+#   262,144-token sessions (batch 32768 drops it to 1,390,905 / 5.31x)
 #   PP=4 (pipeline parallel, TP=1) is 7-10x slower at every concurrency
 #   level and is only justified when the model does not fit on one card.
 #
@@ -67,14 +68,18 @@
     xpu_device_count: 4
     _min_xpu_devices: 4
 
-    # 262144 = the model's native max. TP=4 leaves ~19 GiB/card for fp8 KV,
+    # 262144 = the model's native max. TP=4 leaves ~13.4 GiB/card for fp8 KV,
     # so the full 262k window fits with room for concurrent requests.
     ctx: 262144
     host_port: 8081
     gpu_mem_util: "0.93"
     kv_cache_dtype: "fp8"
     dtype: "float16"
-    max_num_batched_tokens: 32768
+    # batch 16384, not 32768: the larger prefill batch costs ~1 GiB of KV per
+    # card (1.70M -> 1.39M tokens, 6.47x -> 5.31x concurrent 262k sessions).
+    # For long-context agent sessions KV capacity matters more than the ~5%
+    # prefill gain; raise to 32768 only if short-prompt throughput is the goal.
+    max_num_batched_tokens: 16384
     max_num_seqs: 32
 
     # Shared power conditioner: cap each card so the rig cannot pop it.
