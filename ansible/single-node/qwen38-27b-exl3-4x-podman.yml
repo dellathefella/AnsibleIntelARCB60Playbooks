@@ -1,0 +1,343 @@
+---
+# =============================================================================
+# qwen38-27b-exl3-4x-podman.yml
+# Qwen3.8-27B (EXL3 trellis 4.00 bpw + MTP3, fp8 KV) — exl3xpu engine via
+# Podman, FOUR INDEPENDENT INSTANCES, one per Arc Pro B60.
+#
+#   image           ghcr.io/0xsero/exl3xpu@sha256:21412bdd… (PULLED, never built)
+#   model           turboderp/Qwen3.8-27B-exl3 @ 113cf7ab (~15.7 GiB, 4.00 bpw)
+#   backend         XPU (Level-Zero), one engine per card — REQUIRES Resizable BAR.
+#   devices         --gpu 0 / 1 / 2 / 3 (one card per instance)
+#   ports           8100 / 8101 / 8102 / 8103 (one endpoint per instance)
+#   power           {{ power_limit_watts }} W/card burst cap via
+#                   xpu-powerlimit.service (shared power conditioner on arcflash)
+#   API             OpenAI-compatible /v1/* per instance
+#
+# This is the cookbook's "one interactive agent per card" layout: four
+# independent endpoints, not one TP=4 endpoint. Aggregate throughput scales
+# with the number of cards; single-stream latency stays per-card.
+#
+# EXL3 route notes (from SergiioB/intel-arc-pro-b70-inference-cookbook):
+#   - EXL3 is the primary single-card route for Qwen3.8-27B; the GPTQ/W4A16
+#     class is closed (failed arithmetic canary + prefix-cache corruption).
+#   - MTP3 changes greedy output on ~27% of a fixed 329-item set. Serve with
+#     `--set vllm.speculative_config=null --set env.EXL3_DRAFT_VOCAB=null`
+#     when one-shot code must match the model's reproducible greedy answer.
+#   - 98304 ctx (96K) is the deployed ceiling on a 24 GB B60 at 0.96 with fp8
+#     KV: 131072 needs 5.03 GiB KV but only ~4.23 GiB is available at 0.96, so
+#     the engine refuses to start. 98304 needs ~3.94 GiB and leaves ~0.29 GiB
+#     headroom. Raise max_model_len only after checking free VRAM.
+#
+# Measured on arcflash (4x B60, 96K / 0.96, MTP3, 2026-11-17):
+#   single-stream 14.4 t/s @512, 13.7 @8k, 12.3 @32k
+#   aggregate 131.8 t/s median with one request per endpoint
+#   MTP acceptance 54-63%, mean 2.62-2.89 tokens/step
+#   vs vLLM TP=4 AWQ: TP=4 is 66.4 t/s single-stream and 648 t/s at c16, so
+#   this 4x-DP layout is only worth it when per-card isolation matters more
+#   than throughput.
+#
+# One GPU set, one track: this track stops every sibling container before
+# claiming the four devices.
+# =============================================================================
+
+- name: "EXL3 4x — Qwen3.8-27B (4.00 bpw + MTP3) on 4x Arc B60"
+  hosts: xpu4
+  gather_facts: true
+  become: true
+  tags: [qwen38-27b-exl3-4x-podman]
+  vars:
+    # =====================================================================
+    # Qwen3.8-27B EXL3 4-instance track vars — self-contained, no group_vars
+    # =====================================================================
+    track_stem: "qwen38-27b-exl3-4x"
+
+    docker_image: "ghcr.io/0xsero/exl3xpu@sha256:21412bdd7535e9c653eeb3d099dce3bc79a83d440def2cd9556111c79c870fa8"
+    docker_container_name: "qwen38-27b-exl3"
+    sibling_containers:
+      - "strata-sycl-serve"
+      - "qwen38-27b-sycl"
+      - "qwen36-a3b-moe"
+      - "qwen36-a3b-escha-w2"
+      - "qwen38-27b-sycl-tuned"
+      - "qwen38-27b-vllm-xpu"
+      - "qwen38-27b-vllm-xpu-tp2"
+      - "qwen38-27b-vllm-xpu-tp4"
+      - "qwen38-flashnext-strata"
+      - "qwen38-flashnext-grimoire"
+      - "vllm-xpu-qwen38"
+
+    hf_repo: "turboderp/Qwen3.8-27B-exl3"
+    hf_revision: "113cf7ab"
+    served_model_name: "qwen3.8-27b-exl3"
+
+    instances: 4
+    base_port: 8100
+    gpu_ids: [0, 1, 2, 3]
+
+    # 98304 = 96K, the comfortable ceiling on a 24 GB B60 with fp8 KV at 0.96.
+    ctx: 98304
+    gpu_mem_util: "0.96"
+    kv_cache_dtype: "fp8"
+
+    # Shared power conditioner: cap each card so the rig cannot pop it.
+    power_limit_watts: 150
+    xpu_device_count: 4
+
+    _user_home: "/home/{{ ansible_user }}"
+    _models_dir: "{{ _user_home }}/models"
+    _repo_dir: "{{ _models_dir }}/qwen38-exl3-4bpw"
+    _container_repo_dir: "/mnt/exl3model"
+
+    hf_token_lookup: "{{ lookup('file', playbook_dir + '/../secrets/hf_token.txt', errors='ignore') | default('', true) | trim }}"
+
+    # Everything after `podman run -d --name`, shared between the deployment
+    # and the manual debug hint — keeps them from drifting.
+    _podman_common_args: >-
+      --rm
+      --device /dev/dri
+      --security-opt label=disable
+      --ipc=host
+      --group-add keep-groups
+      -v /dev/dri/by-path:/dev/dri/by-path:ro
+      -v {{ _repo_dir }}:{{ _container_repo_dir }}:ro
+      -e ZE_FLAT_DEVICE_HIERARCHY=COMPOSITE
+
+    # exl3xpu serve command (config positional + --set overrides).
+    _exl3_args: >-
+      models/qwen3.8-27b-exl3-4.00bpw
+      --gpu {{ gpu }}
+      --model-path {{ _container_repo_dir }}
+      --set vllm.gpu_memory_utilization={{ gpu_mem_util }}
+      --set vllm.max_model_len={{ ctx }}
+
+    # EXL3 cold start: JIT + graph capture ≈ 6–7 min per instance; four
+    # instances start in parallel, so allow ~20 min.
+    podman_health_retries: 240
+
+    # opencode config (rendered to the controller): one provider per endpoint.
+    opencode_provider_prefix: "qwen-arc-exl3"
+    opencode_model_id: "qwen3.8-27b-exl3"
+    opencode_provider_name: "Qwen 3.8 27B EXL3 (4x Arc B60)"
+    opencode_model_name: "Qwen 3.8 27B (EXL3 4.00 bpw + MTP3)"
+    opencode_context_limit: 98304
+    opencode_output_limit: 8192
+
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. ReBAR gate (mandatory) + XPU probe
+    # -----------------------------------------------------------------------
+    - name: Resolve render node, PCI id, ReBAR window (mandatory)
+      ansible.builtin.include_tasks: tasks/rebar-gate.yml
+
+    - name: Probe torch XPU devices (pulls the image if missing)
+      ansible.builtin.command:
+        cmd: >-
+          podman run --rm --device /dev/dri --security-opt label=disable
+          --entrypoint /bin/bash {{ docker_image }}
+          -lc 'python3 -c "import torch; print(torch.xpu.device_count(), torch.xpu.get_device_name(0))"'
+      register: xpu_probe
+      changed_when: false
+      failed_when: false
+      tags: [podman, gate]
+
+    - name: Assert four XPU devices for the four instances
+      ansible.builtin.assert:
+        that:
+          - xpu_probe.rc == 0
+          - (xpu_probe.stdout | default('')).split(' ')[0] | int >= 4
+        fail_msg: >-
+          torch.xpu sees fewer than 4 devices inside the EXL3 image (got:
+          {{ xpu_probe.stdout | default('?') }}). Four independent instances
+          need device indices 0..3. Check the xe driver, ReBAR, and /dev/dri.
+        success_msg: "XPU devices: {{ xpu_probe.stdout | default('?') }}"
+      tags: [podman, gate]
+
+    # -----------------------------------------------------------------------
+    # 2. Power cap (shared power conditioner)
+    # -----------------------------------------------------------------------
+    - name: Cap each card's burst power limit
+      ansible.builtin.include_tasks: tasks/xpu-powerlimit.yml
+      tags: [podman, power]
+
+    # -----------------------------------------------------------------------
+    # 3. Model (pinned EXL3 repo; skips when config.json is present)
+    # -----------------------------------------------------------------------
+    - name: Set up models directory
+      ansible.builtin.include_tasks: tasks/podman-models-dir.yml
+
+    - name: Download the EXL3 repo if not present
+      ansible.builtin.include_tasks: tasks/hf-download-repo.yml
+
+    # -----------------------------------------------------------------------
+    # 4. Create and run the four Podman containers
+    # -----------------------------------------------------------------------
+    - name: Stop the sibling tracks (one GPU set, one track)
+      ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
+
+    - name: Remove any existing EXL3 containers
+      ansible.builtin.command:
+        cmd: "podman rm -f {{ docker_container_name }}-{{ item }}"
+      loop: "{{ range(0, instances) | list }}"
+      ignore_errors: true
+      changed_when: false
+      tags: [podman, deploy]
+
+    - name: Run the four EXL3 containers (one per B60)
+      ansible.builtin.command:
+        cmd: >-
+          podman run -d --name {{ docker_container_name }}-{{ item }}
+          {{ _podman_common_args }}
+          -p {{ base_port + item }}:{{ base_port + item }}
+          {{ docker_image }}
+          models/qwen3.8-27b-exl3-4.00bpw
+          --gpu {{ item }}
+          --model-path {{ _container_repo_dir }}
+          --set vllm.gpu_memory_utilization={{ gpu_mem_util }}
+          --set vllm.max_model_len={{ ctx }}
+      loop: "{{ range(0, instances) | list }}"
+      register: exl3_run
+      changed_when: "'Started' in exl3_run.stdout or exl3_run.rc == 0"
+      tags: [podman, deploy]
+
+    - name: Check each container is running
+      ansible.builtin.command:
+        cmd: "podman ps --filter name={{ docker_container_name }}-{{ item }} --format json"
+      loop: "{{ range(0, instances) | list }}"
+      register: exl3_check
+      changed_when: false
+      failed_when: false
+      tags: [podman, deploy]
+
+    - name: Print container failure info
+      ansible.builtin.debug:
+        msg: |
+          Container {{ docker_container_name }}-{{ item.item }} is NOT running.
+          Debug: podman logs {{ docker_container_name }}-{{ item.item }}
+          Manual run: podman run -it {{ _podman_common_args }} -p {{ base_port + item.item }}:{{ base_port + item.item }} {{ docker_image }} {{ _exl3_args }}
+      loop: "{{ exl3_check.results }}"
+      when: item.stdout | default('') | length == 0
+      tags: [podman, deploy]
+
+    # -----------------------------------------------------------------------
+    # 5. Wait for each endpoint to report a model (EXL3 health = /v1/models)
+    # -----------------------------------------------------------------------
+    - name: Wait for each EXL3 endpoint to report a model
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ base_port + item }}/v1/models"
+        return_content: true
+        status_code: 200
+      register: exl3_health
+      retries: "{{ podman_health_retries }}"
+      delay: 5
+      until: exl3_health is succeeded and (exl3_health.json.data | default([]) | length > 0)
+      loop: "{{ range(0, instances) | list }}"
+      tags: [podman, deploy]
+
+    # -----------------------------------------------------------------------
+    # 6. Warm the decode path (XPU kernel JIT) on every endpoint
+    # -----------------------------------------------------------------------
+    - name: Warm up each EXL3 decode path
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host | default(inventory_hostname) }}:{{ base_port + item }}/v1/chat/completions"
+        method: POST
+        body_format: json
+        body:
+          model: "{{ served_model_name }}"
+          messages:
+            - role: user
+              content: "{{ ('def helper(x):\n    return x*2+1\n\n') * 900 }}Warmup."
+          max_tokens: 128
+          temperature: 0
+        status_code: 200
+        timeout: 900
+      changed_when: false
+      loop: "{{ range(0, instances) | list }}"
+      tags: [podman, deploy]
+
+    # -----------------------------------------------------------------------
+    # 7. Benchmark: single-stream per endpoint + aggregate across endpoints
+    # -----------------------------------------------------------------------
+    - name: Copy the EXL3 4x benchmark script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../benchmarks/exl3_4x_bench.py"
+        dest: "{{ _user_home }}/scripts/exl3_4x_bench.py"
+        mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      tags: [podman, bench]
+
+    - name: Run the EXL3 4x benchmark (single-stream + aggregate)
+      ansible.builtin.command:
+        cmd: >-
+          python3 {{ _user_home }}/scripts/exl3_4x_bench.py
+          --ports {{ base_port }}-{{ base_port + instances - 1 }}
+          --model {{ served_model_name }}
+      register: exl3_bench
+      changed_when: false
+      tags: [podman, bench]
+
+    - name: Print benchmark results
+      ansible.builtin.debug:
+        msg: "{{ exl3_bench.stdout_lines }}"
+      tags: [podman, bench]
+
+    # -----------------------------------------------------------------------
+    # 8. Render launch script + opencode config
+    # -----------------------------------------------------------------------
+    - name: Ensure scripts directory exists on host
+      ansible.builtin.file:
+        path: "{{ _user_home }}/scripts"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        mode: "0755"
+      tags: [podman, launch]
+
+    - name: Render the EXL3 4x launch script
+      ansible.builtin.template:
+        src: "templates/scripts/{{ track_stem }}-start.sh.j2"
+        dest: "{{ _user_home }}/scripts/{{ track_stem }}-start.sh"
+        mode: "0755"
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+      tags: [podman, launch]
+
+    - name: Ensure opencode-configs output directory exists on controller
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/rendered/opencode-configs"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      tags: [podman, launch]
+
+    - name: Render the EXL3 4x opencode config
+      ansible.builtin.template:
+        src: "templates/opencode-configs/opencode-{{ track_stem }}-podman.json.j2"
+        dest: "{{ playbook_dir }}/rendered/opencode-configs/opencode-{{ track_stem }}-podman.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      tags: [podman, launch]
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg: |
+          ==== EXL3 4x deployed on {{ inventory_hostname }} ====
+          Image: {{ docker_image }} (pulled)
+          Containers: {{ docker_container_name }}-0..{{ instances - 1 }}
+          Endpoints:
+          {% for i in range(0, instances) %}
+            http://{{ ansible_host | default(inventory_hostname) }}:{{ base_port + i }}/v1  (GPU {{ i }})
+          {% endfor %}
+          Model: {{ _repo_dir }} ({{ hf_repo }} @ {{ hf_revision }})
+          Context: {{ ctx }} (EXL3 4.00 bpw, fp8 KV, gpu-mem-util {{ gpu_mem_util }})
+          Power: {{ power_limit_watts }} W/card burst cap (xpu-powerlimit.service)
+          Speculative decoding: MTP3 on (disable with --set vllm.speculative_config=null for exact greedy parity)
+          Launch script: ~/scripts/{{ track_stem }}-start.sh
+
+          === Container log commands ===
+          {% for i in range(0, instances) %}
+          podman logs -f {{ docker_container_name }}-{{ i }}
+          {% endfor %}
+      tags: [podman, deploy]

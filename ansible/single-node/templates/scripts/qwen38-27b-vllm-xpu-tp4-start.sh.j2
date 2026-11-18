@@ -38,9 +38,12 @@ SERVED_MODEL="{{ served_model_name }}"
 start_container() {
   echo "Starting vLLM XPU container (TP=$TP, devices $XPU_DEVICES): $CONTAINER"
   # NOTE: the image entrypoint is already `vllm serve` — model is positional.
-  podman run -d --name "$CONTAINER" \
-    --rm \
+  # keep-groups preserves the render group inside the container; without it
+  # torch.xpu.device_count() is 0 and vLLM fails with "Failed to infer device type".
+  setsid podman run -d --name "$CONTAINER" \
+    --restart=unless-stopped \
     --device /dev/dri \
+    --group-add keep-groups \
     --security-opt label=disable \
     --ipc=host \
     -v "${REPO_DIR}:${CONTAINER_REPO}:ro" \

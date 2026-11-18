@@ -772,3 +772,46 @@ the first long-context decode pays ~10–90 s of compilation).
 - The first long-context request after a cold start pays XPU kernel JIT
   (~10–90 s). The playbook and launch script now send a warmup request after
   `/health`.
+
+## 4x Arc Pro B60 (arcflash) — TP=4 vs PP=4 concurrency (AWQ W4A16, 2026-11-17)
+
+Same rig, same model (`philbert440/Qwen3.8-27B-W4A16-AWQ`), same 262k ctx /
+fp8 KV, batch 16384 / seqs 32, 256-token completions, temperature 0.
+
+| Concurrency | TP=4 tok/s | TP=4 latency | PP=4 tok/s | PP=4 latency |
+|---:|---:|---:|---:|---:|
+| 1 | 66.4 | 3.85 s | 17.4 | 14.69 s |
+| 4 | 232.2 | 4.40 s | 23.6 | 43.32 s |
+| 8 | 423.9 | 4.82 s | 43.8 | 46.69 s |
+| 16 | 647.7 | 6.31 s | 83.8 | 48.83 s |
+
+**Verdict: TP=4 wins by ~7–10x at every concurrency level.** PP=4 splits the
+model into four sequential stages, so every token traverses all four cards
+before it is emitted — latency per token is ~4x TP's, and the pipeline only
+fills at high concurrency (PP c16 = 83.8 t/s vs TP c16 = 647.7 t/s). PP is
+only worth it when the model does not fit on one card; the 14.3 GiB AWQ
+artifact fits on a single B60, so there is no reason to use it here.
+
+### Prefill (cold, nonce'd prompt, max_tokens=1, TTFT-based)
+
+`benchmarks/prefill_vllm.py` — prompt_tokens / TTFT from a streaming request.
+
+| Prompt tokens | TP=4 t/s | TP=4 TTFT | PP=4 t/s | PP=4 TTFT | TP/PP |
+|---:|---:|---:|---:|---:|---:|
+| 16,615 | **2,420** | 6.87 s | 965 | 17.22 s | 2.5x |
+| 67,264 | **1,950** | 34.50 s | 1,556 | 43.24 s | 1.25x |
+| 135,303 | **1,530** | 88.42 s | 1,383 | 97.82 s | 1.11x |
+| 203,344 | **1,258** | 161.59 s | 1,182 | 171.97 s | 1.06x |
+
+TP's prefill advantage shrinks as the prompt grows: short prompts are
+weight-read bound (TP splits weights 4 ways, ~2.5x), while long prompts are
+attention/KV bound, where PP's sequential stages cost almost nothing and TP's
+allreduce overhead eats into the gain. PP's small-batch prefill is also hurt
+by pipeline bubbles (16.6K is disproportionately slow at 965 t/s).
+
+**Deployment note:** the XPU container needs `--group-add keep-groups`. Without
+it `torch.xpu.device_count()` is 0 inside the container and vLLM crash-loops
+with `RuntimeError: Failed to infer device type`. The TP4/TP2/single-GPU
+launch templates now include it, and TP4 uses `setsid` +
+`--restart=unless-stopped` so rootless podman does not SIGTERM the container
+when the SSH session exits.
