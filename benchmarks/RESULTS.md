@@ -828,6 +828,33 @@ tokens), so batch 16384 is the right default for long-context agent sessions.
 vLLM admits ~6 and queues the rest. For 8 resident sessions, cap each at
 ~210K (8 x 210K = 1.68M) or use the 4x-DP layout for more total KV.
 
+### Measured: 8 concurrent ~259K sessions (TP=4, 0.93 / batch 16384)
+
+`benchmarks/longctx_concurrent.py --n 8 --units 1030 --max-tokens 16`
+
+| Session | Prompt tokens | TTFT | Effective prefill |
+|---:|---:|---:|---:|
+| 1 | 259,020 | 247.4 s | 1,047 t/s |
+| 2 | 259,020 | 483.2 s | 536 t/s |
+| 3 | 259,021 | 719.2 s | 360 t/s |
+| 4 | 259,022 | 1,436.0 s | 180 t/s |
+| 5 | 259,023 | 955.6 s | 271 t/s |
+| 6 | 259,024 | 1,671.8 s | 155 t/s |
+| 7 | 259,022 | 1,192.3 s | 217 t/s |
+| 8 | 259,022 | 1,899.1 s | 136 t/s |
+
+Wall 1,899 s (~31.7 min), aggregate prefill 1,091 t/s, 16 completion tokens
+each. Prefill is serialized (`max_num_partial_prefills=1`), so TTFT staggers
+almost linearly and the last session waits ~32 min for its first token. The
+out-of-order TTFTs (session 4 before session 5) show preemption/reordering
+under KV pressure. Aggregate prefill is below the single-stream 203K number
+(1,258 t/s) because of chunk interleaving and KV churn.
+
+Practical ceiling for interactive sessions: 6 x 262K (1.57M), 7 x 240K (1.68M),
+or 8 x 210K (1.68M). 8 x 260K does not fit; raise
+`--max-num-partial-prefills` if parallel long prefills matter more than KV
+headroom.
+
 **Deployment note:** the XPU container needs `--group-add keep-groups`. Without
 it `torch.xpu.device_count()` is 0 inside the container and vLLM crash-loops
 with `RuntimeError: Failed to infer device type`. The TP4/TP2/single-GPU

@@ -27,6 +27,8 @@
 #   prefill 2,420 t/s @ 16.6k, 1,950 @ 67.3k, 1,530 @ 135k, 1,258 @ 203k
 #   KV pool 1,696,225 tokens at 0.93 / batch 16384 -> 6.47 concurrent
 #   262,144-token sessions (batch 32768 drops it to 1,390,905 / 5.31x)
+#   8 x 259K sessions exceed the pool: prefills serialize, TTFT 247 s -> 1,899 s,
+#   aggregate prefill 1,091 t/s. Cap at ~210K for 8 resident sessions.
 #   PP=4 (pipeline parallel, TP=1) is 7-10x slower at every concurrency
 #   level and is only justified when the model does not fit on one card.
 #
