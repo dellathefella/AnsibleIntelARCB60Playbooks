@@ -785,6 +785,17 @@ fp8 KV, batch 16384 / seqs 32, 256-token completions, temperature 0.
 | 8 | 423.9 | 4.82 s | 43.8 | 46.69 s |
 | 16 | 647.7 | 6.31 s | 83.8 | 48.83 s |
 
+Re-run at 0.93 / batch 16384 (256-token completions, short prompt):
+
+| Concurrency | TP=4 tok/s | per-stream tok/s | latency |
+|---:|---:|---:|---:|
+| 16 | 574.7 | 35.9 | 7.11 s |
+| 32 (max_num_seqs cap) | **920.7** | 28.8 | 8.88 s |
+
+Aggregate scales to ~920 tok/s at the 32-sequence cap. Raising `max_num_seqs`
+to 64/128 lifts batch throughput further; KV is not the constraint for short
+prompts (1.70M tokens supports hundreds of 2K-context tasks).
+
 **Verdict: TP=4 wins by ~7–10x at every concurrency level.** PP=4 splits the
 model into four sequential stages, so every token traverses all four cards
 before it is emitted — latency per token is ~4x TP's, and the pipeline only
