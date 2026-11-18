@@ -1,0 +1,166 @@
+---
+# =============================================================================
+# qwen38-flashnext-grimoire-podman.yml
+# Qwen3.8-Flash-Next (nvidia NVFP4 checkpoint, 132.7 GB) — GRIMOIRE via
+# Podman: the native C++/SYCL/Level-Zero engine built for Intel Battlemage
+# (https://github.com/doopeworld/GRIMOIRE, GPL-3.0).
+#
+#   image           localhost/strata:sycl-build (oneAPI 2026.1 devel image —
+#                   GRIMOIRE is BUILT FROM SOURCE on the host checkout; the
+#                   pinned icpx 2026.1.1.20260724 matches GRIMOIRE's measured
+#                   compiler exactly)
+#   model           nvidia/Qwen3.8-Flash-Next-NVFP4 (~124 GiB, hf download)
+#   backend         SYCL/Level-Zero, AOT for intel_gpu_bmg_g31 + bmg_g21
+#                   (B60 = g21) — REQUIRES Resizable BAR (rebar-gate.yml).
+#   tiering         48x512 NVFP4 experts: GRIMOIRE_EXPERT_VRAM_PER_LAYER in
+#                   VRAM, the rest computed by the CPU pool from pinned RAM
+#                   (~53 GiB) — the box needs ~180 GiB free RAM.
+#   devices         ONEAPI_DEVICE_SELECTOR=level_zero:<dev> — lagrange dev0 is
+#                   PCIe x4 Gen3 (bench numbers below are FROM dev0; dev1/dev2
+#                   are x8 and faster). One track, one GPU.
+#   API             OpenAI-compatible /v1/* on port 8189 (server mode)
+#   launch script   ~/scripts/qwen38-flashnext-grimoire-start.sh
+#
+# Measured on lagrange (see benchmarks/RESULTS-flashnext-lagrange.md):
+#   dev0 x4, VRAM/layer 104, ctx 4096, hits file: 18.7 tok/s decode (256 gen)
+#   dev0 x4, VRAM/layer  72, ctx 16384, 3.9K prompt: 14.5 tok/s decode,
+#          206.7 tok/s prefill
+#   The GRIMOIRE_EXPERT_HITS file accumulates routing counts at exit; the next
+#   start places the hot experts in VRAM (0.83 -> 15 -> 18.7 tok/s as it warms).
+# =============================================================================
+
+- name: "GRIMOIRE SYCL — Qwen3.8-Flash-Next (NVFP4, tiered) on Arc B60"
+  hosts: sycl
+  gather_facts: true
+  become: true
+  tags: [qwen38-flashnext-grimoire-podman]
+  vars:
+    # =====================================================================
+    # Flash-Next GRIMOIRE track vars — self-contained, no group_vars
+    # =====================================================================
+    track_stem: "qwen38-flashnext-grimoire"
+
+    docker_image: "localhost/strata:sycl-build"
+    docker_container_name: "qwen38-flashnext-grimoire"
+    sibling_containers:
+      - "qwen38-27b-sycl"
+      - "qwen36-a3b-moe"
+      - "qwen36-a3b-escha-w2"
+      - "qwen38-27b-sycl-tuned"
+      - "qwen38-27b-vllm-xpu"
+      - "qwen38-27b-vllm-xpu-tp2"
+      - "qwen38-flashnext-strata"
+      - "grim1"
+      - "grim2"
+      - "grim3"
+      - "grim4"
+      - "grim5"
+      - "grim6"
+      - "grim7"
+      - "grim8"
+      - "grim9"
+      - "grimS"
+
+    hf_repo: "nvidia/Qwen3.8-Flash-Next-NVFP4"
+    served_model_name: "qwen3.8-flash-next"
+
+    # GRIMOIRE source checkout + build (host paths; built by build_grimoire.sh)
+    grimoire_src: "/home/{{ ansible_user }}/GRIMOIRE"
+    grimoire_repo: "https://github.com/doopeworld/GRIMOIRE"
+
+    # tiering / device
+    level_zero_device: "0"          # 0 = dev0 (x4); 1/2 = the x8 Gen3 cards
+    expert_vram_per_layer: 104      # 104: max decode (short ctx); 72: ctx 16384
+    ctx: 4096
+    hits_file: "/models/grim.hits"  # container path; accumulates across runs
+
+    host_port: 8189
+    mode: "server"                  # server | cli
+
+    _user_home: "/home/{{ ansible_user }}"
+    _models_dir: "{{ _user_home }}/models"
+    _container_models_dir: "/models"
+    _repo_dir: "{{ _models_dir }}/Flash-Next-NVFP4"
+    _container_repo_dir: "/models/Flash-Next-NVFP4"
+
+    hf_token_lookup: "{{ lookup('file', playbook_dir + '/../secrets/hf_token.txt', errors='ignore') | default('', true) | trim }}"
+
+  tasks:
+    - name: Resolve render node, PCI id, ReBAR window (mandatory)
+      ansible.builtin.include_tasks: tasks/rebar-gate.yml
+
+    - name: Check the GRIMOIRE checkout exists
+      ansible.builtin.stat:
+        path: "{{ grimoire_src }}/build_b70.sh"
+      register: _grim_src
+
+    - name: Clone GRIMOIRE (main) if missing
+      ansible.builtin.git:
+        repo: "{{ grimoire_repo }}"
+        dest: "{{ grimoire_src }}"
+        depth: 1
+      when: not _grim_src.stat.exists
+
+    - name: Check the built binaries exist
+      ansible.builtin.stat:
+        path: "{{ grimoire_src }}/bin/grimoire-server"
+      register: _grim_bin
+
+    - name: Build GRIMOIRE in the oneAPI container (AOT g31+g21, ~45 min once)
+      ansible.builtin.command:
+        cmd: >-
+          podman run --rm --security-opt label=disable
+          -v {{ grimoire_src }}:/g -w /g
+          --entrypoint /bin/bash {{ docker_image }}
+          -c 'source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1; ./build_b70.sh'
+      when: not _grim_bin.stat.exists
+
+    - name: Set up models directory
+      ansible.builtin.include_tasks: tasks/podman-models-dir.yml
+
+    - name: Download the Flash-Next NVFP4 checkpoint if not present
+      ansible.builtin.include_tasks: tasks/hf-download-repo.yml
+
+    - name: Stop the sibling tracks (one GPU, one track)
+      ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
+
+    - name: Remove any existing container
+      ansible.builtin.include_tasks: tasks/podman-remove-container.yml
+
+    - name: Run the GRIMOIRE server container
+      ansible.builtin.command:
+        cmd: >-
+          podman run -d --name {{ docker_container_name }}
+          --init --stop-timeout 300
+          --device /dev/dri
+          --security-opt label=disable
+          -v {{ grimoire_src }}:/g
+          -v {{ _models_dir }}:{{ _container_models_dir }}
+          -p {{ host_port }}:{{ host_port }}
+          -w /g
+          -e ONEAPI_DEVICE_SELECTOR=level_zero:{{ level_zero_device }}
+          -e GRIMOIRE_EXPERT_VRAM_PER_LAYER={{ expert_vram_per_layer }}
+          -e GRIMOIRE_EXPERT_HITS={{ hits_file }}
+          --entrypoint /bin/bash {{ docker_image }}
+          -c 'source /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1;
+              export LD_LIBRARY_PATH=/g/bin:$LD_LIBRARY_PATH;
+              exec ./bin/grimoire-server
+                --model {{ _container_repo_dir }} --proj bf16
+                --ctx {{ ctx }} --port {{ host_port }}'
+      when: mode == "server"
+
+    - name: Check container status
+      ansible.builtin.include_tasks: tasks/podman-check-running.yml
+      when: mode == "server"
+
+    - name: Render launch script
+      ansible.builtin.include_tasks: tasks/podman-render-launch-artifacts.yml
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg: >-
+          GRIMOIRE Flash-Next (NVFP4, tiered) on level_zero:{{ level_zero_device }},
+          {{ expert_vram_per_layer }} experts/layer in VRAM, ctx {{ ctx }}.
+          Server: http://{{ ansible_host }}:{{ host_port }}/v1
+          (load takes ~5 min; watch: podman logs -f {{ docker_container_name }}).
+          CLI benchmark mode: see ~/scripts/{{ track_stem }}-start.sh bench.

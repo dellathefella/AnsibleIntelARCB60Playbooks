@@ -1,0 +1,130 @@
+---
+# =============================================================================
+# qwen38-flashnext-strata-podman.yml
+# Qwen3.8-Flash-Next (Strata Q8_0 native pack + GGUF shards) — Strata via
+# Podman: the CUDA inference engine ported to SYCL/Level-Zero for Arc B60
+# (fork: dellathefella/Strata, branch sycl-backend).
+#
+#   image           localhost/strata:sycl-build (oneAPI 2026.1 devel; the
+#                   engine is BUILT FROM SOURCE in /data/strata on the host)
+#   model           Strata pack: /home/{{ ansible_user }}/pack-q8_0 (iq_pack.py
+#                   output) + the Q8_0 GGUF shards (--native) + the hand-built
+#                   PLE table (ple_key.gguf) + data/expert-profile.bin
+#   backend         SYCL/Level-Zero eager-window execution (no CUDA graphs;
+#                   the shim maps streams to in-order queues) — REQUIRES
+#                   Resizable BAR (rebar-gate.yml).
+#   multi-GPU       --serve --layer-split auto --split-device 1: pipeline
+#                   (layer) split across cards; each card keeps its own expert
+#                   cache (2 cards = 7567 resident experts vs 3599 on one).
+#                   Needs the MTP runtime dir (tools/mtp_rt.py output).
+#   API             NONE — Strata serve is a stdin line protocol
+#                   (GEN <max_new> <id,id,...> / QUIT); the launch script wraps
+#                   one-shot benchmarks and an interactive serve.
+#   launch script   ~/scripts/qwen38-flashnext-strata-start.sh
+#
+# Measured on lagrange (benchmarks/RESULTS-flashnext-lagrange.md):
+#   1 GPU  (dev1 x8): decode 4.8-6.0 tok/s, prefill 24 tok/s (chunk 256),
+#          120 tok/s (chunk 4096, 3.9K prompt); 3/3 runs bit-identical.
+#   2 GPU  (layer split): 7567 resident experts, decode ~2x fewer CPU-pool
+#          rounds (see RESULTS for the serve benchmark).
+# =============================================================================
+
+- name: "Strata SYCL — Qwen3.8-Flash-Next (Q8_0 pack, layer split) on Arc B60"
+  hosts: sycl
+  gather_facts: true
+  become: true
+  tags: [qwen38-flashnext-strata-podman]
+  vars:
+    track_stem: "qwen38-flashnext-strata"
+
+    docker_image: "localhost/strata:sycl-build"
+    docker_container_name: "qwen38-flashnext-strata"
+    sibling_containers:
+      - "qwen38-flashnext-grimoire"
+      - "strataMG"
+      - "strataMH"
+      - "strataMI"
+
+    # host layout (built by hand / the port sessions; see the Strata repo)
+    strata_src: "/data/strata"
+    strata_branch: "sycl-backend"
+    strata_fork: "https://github.com/dellathefella/Strata.git"
+    pack_dir: "/home/{{ ansible_user }}/pack-q8_0"
+    native_shard1: "/data/models/Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf"
+    ple_gguf: "/home/{{ ansible_user }}/ple_key.gguf"
+    expert_profile: "{{ strata_src }}/data/expert-profile.bin"
+    mtp_rt_dir: "/home/{{ ansible_user }}/mtp-rt"
+
+    # runtime knobs (the measured-good config; see RESULTS-flashnext-lagrange)
+    level_zero_devices: "1,2"       # selector order: main card first
+    split_device: "1"               # stage 1 on the second visible card
+    layer_split: "auto"
+    spec: 3
+    prefill_chunk: 4096
+    max_context: 8192
+    pcie_mode: "dma"                # kernel/direct modes fault on this driver
+    pcie_frac: 0
+
+    _user_home: "/home/{{ ansible_user }}"
+    _models_dir: "{{ _user_home }}/models"
+
+  tasks:
+    - name: Resolve render node, PCI id, ReBAR window (mandatory)
+      ansible.builtin.include_tasks: tasks/rebar-gate.yml
+
+    - name: Check the Strata checkout exists
+      ansible.builtin.stat:
+        path: "{{ strata_src }}/CMakeLists.txt"
+      register: _strata_src
+
+    - name: Clone the Strata fork if missing
+      ansible.builtin.git:
+        repo: "{{ strata_fork }}"
+        dest: "{{ strata_src }}"
+        version: "{{ strata_branch }}"
+      when: not _strata_src.stat.exists
+
+    - name: Check the model artifacts exist (pack, native shard, PLE table)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: _strata_artifacts
+      loop:
+        - "{{ pack_dir }}/index.txt"
+        - "{{ native_shard1 }}"
+        - "{{ ple_gguf }}"
+        - "{{ expert_profile }}"
+
+    - name: Fail with preparation hints when an artifact is missing
+      ansible.builtin.fail:
+        msg: >-
+          Missing Strata artifact: {{ item.item }}.
+          Prepare it first — pack: tools/iq_pack.py from the Q8_0 shards
+          (--compat-bf16); PLE: the hand-built single-tensor ple_key GGUF;
+          profile: the engine's --expert-profile-save output.
+      loop: "{{ _strata_artifacts.results }}"
+      when: not item.stat.exists
+
+    - name: Stop the sibling tracks (one GPU set, one track)
+      ansible.builtin.include_tasks: tasks/podman-stop-sibling.yml
+
+    - name: Remove any existing container
+      ansible.builtin.include_tasks: tasks/podman-remove-container.yml
+
+    - name: Build the engine in the container (incremental, ~2-8 min)
+      ansible.builtin.command:
+        cmd: >-
+          podman run --rm --security-opt label=disable
+          -v {{ strata_src }}:/src -w /src/build
+          --entrypoint /bin/bash {{ docker_image }}
+          -c 'cmake --build . -j8 --target strata 2>&1 | tail -3'
+
+    - name: Render launch script
+      ansible.builtin.include_tasks: tasks/podman-render-launch-artifacts.yml
+
+    - name: Print deployment summary
+      ansible.builtin.debug:
+        msg: >-
+          Strata Flash-Next ready. Benchmarks: ~/scripts/{{ track_stem }}-start.sh bench
+          (single card) / bench-split (2-GPU layer split, needs {{ mtp_rt_dir }}).
+          Interactive serve: {{ track_stem }}-start.sh serve — then paste
+          'GEN 32 <id,id,...>' lines. Results: benchmarks/RESULTS-flashnext-lagrange.md

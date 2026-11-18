@@ -1,0 +1,241 @@
+#!/usr/bin/env python3
+"""strata_bridge.py — OpenAI-compatible HTTP front end for Strata's stdin serve.
+
+One container: this bridge spawns `strata --serve` as a child process and
+translates between HTTP (/v1/chat/completions, /v1/models, /health) and the
+engine's line protocol:
+
+    request :  GEN <max_new> [key=value ...] <id,id,...>
+    response:  T <id>            (one line per generated token)
+               DONE <generated> <prompt_tokens> <prompt_ms> <decode_ms>
+                    <stop|length|cancel> <drafts accepted> <drafts offered> ...
+               ERR <message>     (instead, when the request cannot run)
+
+The engine is serial: requests are serialized behind a lock. The child is
+watchdogged and restarted (model reload ~2-3 min) if it dies.
+
+Env:
+  STRATA_ENGINE_ARGS   full engine argument string (without `--serve`)
+  STRATA_PORT          HTTP port (default 8190)
+  STRATA_MODEL_NAME    served model name (default qwen3.8-flash-next)
+  STRATA_TOKENIZER     path to tokenizer.json (HF checkpoint)
+  STRATA_TOKENIZER_CONFIG  path to tokenizer_config.json (chat template)
+"""
+import json
+import os
+import queue
+import shlex
+import subprocess
+import sys
+import threading
+import time
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PORT = int(os.environ.get("STRATA_PORT", "8190"))
+MODEL = os.environ.get("STRATA_MODEL_NAME", "qwen3.8-flash-next")
+ENGINE_ARGS = os.environ.get("STRATA_ENGINE_ARGS", "")
+TOK_PATH = os.environ.get("STRATA_TOKENIZER", "/models/Flash-Next-NVFP4/tokenizer.json")
+TOKCFG_PATH = os.environ.get("STRATA_TOKENIZER_CONFIG",
+                             "/models/Flash-Next-NVFP4/tokenizer_config.json")
+
+from tokenizers import Tokenizer  # noqa: E402  (after env so the path is set)
+
+_tokenizer = Tokenizer.from_file(TOK_PATH)
+try:
+    with open(TOKCFG_PATH) as f:
+        _chat_template = json.load(f).get("chat_template")
+except Exception:
+    _chat_template = None
+
+try:
+    import jinja2
+except Exception:
+    jinja2 = None
+
+
+def render_chat(messages):
+    if _chat_template and jinja2 is not None:
+        try:
+            return jinja2.Template(_chat_template).render(
+                messages=messages, add_generation_prompt=True)
+        except Exception as e:
+            log(f"chat template render failed ({e}); falling back to plain join")
+    parts = []
+    for m in messages:
+        role = m.get("role", "user")
+        parts.append(f"<|im_start|>{role}\n{m.get('content', '')}<|im_end|>\n")
+    parts.append("<|im_start|>assistant\n")
+    return "".join(parts)
+
+
+def log(msg):
+    print(f"[bridge {time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
+class Engine:
+    """The strata --serve child: one at a time, restarted on death."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.proc = None
+        self.ready = threading.Event()
+        self.stdout_q = queue.Queue()
+        self._start()
+        threading.Thread(target=self._pump_stderr, daemon=True).start()
+
+    def _start(self):
+        cmd = ["./build/strata", "--serve"] + shlex.split(ENGINE_ARGS)
+        log(f"starting engine: {' '.join(cmd)}")
+        self.ready.clear()
+        self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, text=True, bufsize=1,
+                                     cwd=os.environ.get("STRATA_CWD", "/src"))
+        threading.Thread(target=self._pump_stdout, daemon=True).start()
+
+    def _pump_stdout(self):
+        assert self.proc and self.proc.stdout
+        for line in self.proc.stdout:
+            self.stdout_q.put(line.rstrip("\n"))
+        self.stdout_q.put(None)  # EOF: the child died
+
+    def _pump_stderr(self):
+        assert self.proc and self.proc.stderr
+        for line in self.proc.stderr:
+            line = line.rstrip()
+            if "session is up" in line:
+                self.ready.set()
+                log("engine ready (session is up)")
+            log("engine: " + line)
+
+    def _alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def _ensure(self):
+        if not self._alive():
+            log("engine died; restarting (model reload takes minutes)")
+            self._start()
+        # drain anything stale from a previous request
+        deadline = time.time() + 900
+        while not self.ready.is_set():
+            if not self._alive():
+                self._start()
+                deadline = time.time() + 900
+            if time.time() > deadline:
+                raise RuntimeError("engine did not become ready")
+            time.sleep(0.5)
+
+    def generate(self, ids, max_new):
+        """Run one GEN request; yields ('T', id) per token, then ('DONE', fields)."""
+        with self.lock:
+            self._ensure()
+            while not self.stdout_q.empty():
+                self.stdout_q.get_nowait()
+            assert self.proc and self.proc.stdin
+            line = f"GEN {max_new} " + ",".join(str(i) for i in ids) + "\n"
+            self.proc.stdin.write(line)
+            self.proc.stdin.flush()
+            while True:
+                item = self.stdout_q.get()
+                if item is None:
+                    raise RuntimeError("engine died mid-request")
+                if item.startswith("T "):
+                    yield ("T", int(item.split()[1]))
+                elif item.startswith("DONE"):
+                    yield ("DONE", item.split()[1:])
+                    return
+                elif item.startswith("ERR"):
+                    raise RuntimeError(item[4:].strip())
+                # RESUME/PP/REUSED: informational, skip
+
+
+ENGINE = Engine()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _send(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path == "/health":
+            up = ENGINE.ready.is_set() and ENGINE._alive()
+            self._send(200 if up else 503, {"status": "ok" if up else "loading"})
+        elif self.path == "/v1/models":
+            self._send(200, {"object": "list", "data": [
+                {"id": MODEL, "object": "model", "owned_by": "strata-sycl"}]})
+        else:
+            self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        if self.path not in ("/v1/chat/completions", "/v1/completions"):
+            return self._send(404, {"error": "not found"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            req = json.loads(self.rfile.read(length) or b"{}")
+        except Exception as e:
+            return self._send(400, {"error": f"bad request: {e}"})
+        if self.path == "/v1/chat/completions":
+            text = render_chat(req.get("messages", []))
+        else:
+            text = req.get("prompt", "")
+        max_new = int(req.get("max_tokens") or req.get("max_completion_tokens") or 128)
+        ids = _tokenizer.encode(text).ids
+        t0 = time.time()
+        out_ids, done = [], None
+        try:
+            for kind, payload in ENGINE.generate(ids, max_new):
+                if kind == "T":
+                    out_ids.append(payload)
+                else:
+                    done = payload
+        except Exception as e:
+            return self._send(500, {"error": str(e)})
+        text_out = _tokenizer.decode(out_ids)
+        finish = "stop"
+        prompt_ms = decode_ms = 0.0
+        if done:
+            try:
+                finish = {"stop": "stop", "length": "length", "cancel": "stop"}.get(done[4], "stop")
+                prompt_ms, decode_ms = float(done[2]), float(done[3])
+            except Exception:
+                pass
+        self._send(200, {
+            "id": f"chatcmpl-strata-{int(t0*1000)}",
+            "object": "chat.completion" if self.path.endswith("chat/completions") else "text_completion",
+            "created": int(t0),
+            "model": MODEL,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": text_out},
+                "text": text_out,
+                "finish_reason": finish,
+            }],
+            "usage": {
+                "prompt_tokens": len(ids),
+                "completion_tokens": len(out_ids),
+                "total_tokens": len(ids) + len(out_ids),
+            },
+            "timings": {
+                "prompt_ms": prompt_ms,
+                "decode_ms": decode_ms,
+                "wall_s": round(time.time() - t0, 3),
+                "decode_tok_s": round(len(out_ids) / (decode_ms / 1000.0), 2) if decode_ms else None,
+            },
+        })
+
+
+def main():
+    log(f"bridge listening on :{PORT}, model {MODEL}")
+    ThreadingHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
